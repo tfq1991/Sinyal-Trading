@@ -1,6 +1,7 @@
 # =====================================
 # ===  MrT Scalper Combo + Booster  ===
 # ===  OKX + MEXC fallback + Debug  ===
+# ===  VWAP Divergence + RSI Opt ===
 # =====================================
 import logging
 import os
@@ -14,9 +15,8 @@ import ta
 from datetime import datetime
 
 # === KONFIGURASI ===
-TIMEFRAMES = ["5m", "15m", "1h", "4h"]
+TIMEFRAMES = ["15m", "1h"]
 
-# === 50 Pair Utama di OKX ===
 SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
     "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT",
@@ -30,15 +30,15 @@ SYMBOLS = [
     "WLDUSDT", "SUIUSDT", "PYTHUSDT"
 ]
 
-TP_MULTIPLIER = 1.5
-SL_MULTIPLIER = 1.0
-SCAN_INTERVAL = 15  # menit antar scan
+TP_PERCENT = 0.06
+SL_PERCENT = 0.03
+SCAN_INTERVAL = 15
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
 if not TELEGRAM_TOKEN or not CHAT_ID:
-    logging.error("❌ Missing TELEGRAM_TOKEN or CHAT_ID di environment variables.")
+    logging.error("❌ Missing TELEGRAM_TOKEN atau CHAT_ID di environment variables.")
     sys.exit(1)
 
 LAST_SIGNALS_FILE = "last_signals.json"
@@ -57,14 +57,13 @@ def send_message(msg):
         logging.error(f"[ERROR] Gagal kirim pesan Telegram: {e}")
 
 
-# === LAST SIGNALS PERSISTENCE ===
+# === LAST SIGNALS ===
 def load_last_signals():
     global last_signals
     try:
         if os.path.exists(LAST_SIGNALS_FILE):
             with open(LAST_SIGNALS_FILE, "r") as f:
                 last_signals.update(json.load(f))
-                logging.info(f"Last signals loaded: {len(last_signals)} entries")
     except Exception as e:
         logging.error(f"Gagal memuat {LAST_SIGNALS_FILE}: {e}")
 
@@ -77,145 +76,120 @@ def save_last_signals():
         logging.error(f"Gagal menyimpan {LAST_SIGNALS_FILE}: {e}")
 
 
-# === GET KLINES (OKX) ===
+# === GET KLINES ===
 def get_klines(symbol, interval="15m", limit=200):
     tf_map = {
         "1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m",
-        "1h": "1H", "4h": "4H", "6h": "6H", "12h": "12H",
-        "1d": "1D", "1w": "1W"
+        "1h": "1H", "4h": "4H", "6h": "6H", "12h": "12H", "1d": "1D", "1w": "1W"
     }
     interval = tf_map.get(interval, "15m")
 
     if "-" not in symbol and symbol.endswith("USDT"):
         symbol = symbol.replace("USDT", "-USDT")
 
-    endpoints = [
-        "https://www.okx.com",
-        "https://www.okx.cab",
-        "https://www.okx.co",
-        "https://aws.okx.com",
-    ]
+    endpoints = ["https://www.okx.com", "https://www.okx.cab", "https://aws.okx.com"]
 
     for base_url in endpoints:
-        for attempt in range(3):
-            try:
-                url = f"{base_url}/api/v5/market/candles"
-                params = {"instId": symbol, "bar": interval, "limit": limit}
-                response = requests.get(url, params=params, timeout=10)
-                response.raise_for_status()
-                data = response.json()
-
-                if "data" not in data or len(data["data"]) == 0:
-                    logging.warning(f"⚠️ Data kosong dari {base_url} untuk {symbol}")
-                    continue
-
-                raw = data["data"][::-1]
-                df = pd.DataFrame(raw, columns=[
-                    "open_time", "open", "high", "low", "close",
-                    "volume", "volCcy", "volCcyQuote", "confirm"
-                ])
-
-                for col in ["open", "high", "low", "close", "volume"]:
-                    df[col] = df[col].astype(float)
-
-                df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
-                df["close_time"] = df["open_time"]
-
-                return df
-
-            except Exception as e:
-                logging.error(f"[ERROR] {symbol} ({interval}) di {base_url}: {e}")
-                time.sleep(2)
-
-        logging.warning(f"🚫 Gagal 3x di {base_url} untuk {symbol}")
-
-    logging.error(f"❌ Semua endpoint OKX gagal untuk {symbol}")
+        try:
+            url = f"{base_url}/api/v5/market/candles"
+            params = {"instId": symbol, "bar": interval, "limit": limit}
+            r = requests.get(url, params=params, timeout=10)
+            r.raise_for_status()
+            data = r.json()
+            raw = data["data"][::-1]
+            df = pd.DataFrame(raw, columns=["open_time", "open", "high", "low", "close", "volume", "volCcy", "volCcyQuote", "confirm"])
+            for col in ["open", "high", "low", "close", "volume"]:
+                df[col] = df[col].astype(float)
+            df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
+            df["close_time"] = df["open_time"]
+            return df
+        except Exception:
+            continue
     return pd.DataFrame()
 
 
-# === DETEKSI SINYAL ===
+# === DETEKSI SINYAL 1H ===
 def detect_signal(df, interval="1h"):
     if df.shape[0] < 50:
         return None
+    df["ema50"] = ta.trend.EMAIndicator(df["close"], 50).ema_indicator()
+    df["ema200"] = ta.trend.EMAIndicator(df["close"], 200).ema_indicator()
+    df["rsi"] = ta.momentum.RSIIndicator(df["close"], 14).rsi()
+    macd = ta.trend.MACD(df["close"], 26, 12, 9)
+    df["macd"], df["macd_signal"] = macd.macd(), macd.macd_signal()
 
-    try:
-        df["ema50"] = ta.trend.EMAIndicator(df["close"], window=50).ema_indicator()
-        df["ema200"] = ta.trend.EMAIndicator(df["close"], window=200).ema_indicator()
-        df["rsi"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
-        df["vwap"] = ta.volume.VolumeWeightedAveragePrice(
-            high=df["high"], low=df["low"], close=df["close"], volume=df["volume"]
-        ).volume_weighted_average_price()
-        macd = ta.trend.MACD(df["close"], window_slow=26, window_fast=12, window_sign=9)
-        df["macd"] = macd.macd()
-        df["macd_signal"] = macd.macd_signal()
-        df["volume_ratio"] = df["volume"] / df["volume"].rolling(20).mean()
-    except Exception as e:
-        logging.error(f"Indicator calc error: {e}")
+    last = df.iloc[-1]
+    if last["ema50"] > last["ema200"] and last["macd"] > last["macd_signal"] and last["rsi"] > 50:
+        return "BUY", "Trend Confirm", "Strong"
+    elif last["ema50"] < last["ema200"] and last["macd"] < last["macd_signal"] and last["rsi"] < 50:
+        return "SELL", "Trend Confirm", "Strong"
+    return None
+
+
+# === DETEKSI SINYAL 15m (VWAP Divergence + RSI Optimized) ===
+def detect_signal_15m(df):
+    if df.shape[0] < 50:
         return None
 
-    df["vwap_diff"] = df["close"] - df["vwap"]
-    df["ema9"] = ta.trend.EMAIndicator(df["close"], window=9).ema_indicator()
-    df["ema21"] = ta.trend.EMAIndicator(df["close"], window=21).ema_indicator()
+    df["rsi"] = ta.momentum.RSIIndicator(df["close"], 14).rsi()
+    df["rsi_fast"] = ta.momentum.RSIIndicator(df["close"], 7).rsi()
+    df["rsi_smooth"] = df["rsi"].rolling(3).mean()
 
-    stoch_rsi = ta.momentum.StochRSIIndicator(df["close"], window=14, smooth1=3, smooth2=3)
-    df["stoch_rsi_k"] = stoch_rsi.stochrsi_k()
-    df["stoch_rsi_d"] = stoch_rsi.stochrsi_d()
+    macd = ta.trend.MACD(df["close"], 26, 12, 9)
+    df["macd"], df["macd_signal"] = macd.macd(), macd.macd_signal()
 
-    bb = ta.volatility.BollingerBands(df["close"], window=20, window_dev=2)
-    df["bb_high"] = bb.bollinger_hband()
-    df["bb_low"] = bb.bollinger_lband()
+    df["vwap"] = ta.volume.VolumeWeightedAveragePrice(
+        high=df["high"], low=df["low"], close=df["close"], volume=df["volume"]
+    ).volume_weighted_average_price()
 
-    signal, mode, strength = None, None, "Neutral"
+    df["obv"] = ta.volume.OnBalanceVolumeIndicator(df["close"], df["volume"]).on_balance_volume()
+    df["obv_ma"] = df["obv"].rolling(20).mean()
+    df["volume_ratio"] = df["volume"] / df["volume"].rolling(20).mean()
+
+    # === VWAP Divergence ===
+    df["price_change"] = df["close"].pct_change()
+    df["vwap_change"] = df["vwap"].pct_change()
+    df["vwap_div"] = df["price_change"] * df["vwap_change"]
+
     last = df.iloc[-1]
-    prev = df.iloc[-2]
 
-    bullish_div = (last["close"] > prev["close"]) and (last["vwap_diff"] < prev["vwap_diff"])
-    bearish_div = (last["close"] < prev["close"]) and (last["vwap_diff"] > prev["vwap_diff"])
+    # === Kondisi BUY ===
+    if (
+        last["rsi_smooth"] > 52
+        and last["rsi_fast"] > 50
+        and last["macd"] > last["macd_signal"]
+        and last["close"] > last["vwap"]
+        and last["obv"] > last["obv_ma"]
+        and last["vwap_div"] < 0
+        and last["volume_ratio"] > 1.0
+    ):
+        return "BUY", "RSI_Opt+VWAP_Div", "Confirmed"
 
-    if bullish_div and last["rsi"] < 40 and last["macd"] > last["macd_signal"]:
-        signal, mode, strength = "BUY", "VWAP-RSI-Kernel", "Classic"
-    elif bearish_div and last["rsi"] > 60 and last["macd"] < last["macd_signal"]:
-        signal, mode, strength = "SELL", "VWAP-RSI-Kernel", "Classic"
+    # === Kondisi SELL ===
+    elif (
+        last["rsi_smooth"] < 48
+        and last["rsi_fast"] < 50
+        and last["macd"] < last["macd_signal"]
+        and last["close"] < last["vwap"]
+        and last["obv"] < last["obv_ma"]
+        and last["vwap_div"] < 0
+        and last["volume_ratio"] > 1.0
+    ):
+        return "SELL", "RSI_Opt+VWAP_Div", "Confirmed"
 
-    bullish_trend = last["ema50"] > last["ema200"]
-    bearish_trend = last["ema50"] < last["ema200"]
-
-    if bullish_trend and last["macd"] > last["macd_signal"] and last["rsi"] > 50:
-        signal, mode, strength = "BUY", "Trend-MACD-RSI", "Strong"
-    elif bearish_trend and last["macd"] < last["macd_signal"] and last["rsi"] < 50:
-        signal, mode, strength = "SELL", "Trend-MACD-RSI", "Strong"
-
-    if last["close"] > last["vwap"] and last["macd"] > last["macd_signal"]:
-        signal, mode, strength = "BUY", "VWAP-MACD", "Confirmed"
-    elif last["close"] < last["vwap"] and last["macd"] < last["macd_signal"]:
-        signal, mode, strength = "SELL", "VWAP-MACD", "Confirmed"
-
-    return signal, mode, strength
+    return None
 
 
 # === KONFIRMASI MULTI TF ===
-def confirm_signal(signal_small_tf, signal_big_tf, tf_small="5m", tf_big="1h"):
-    if not signal_small_tf or not signal_big_tf:
+def confirm_signal(signal_small, signal_big):
+    if not signal_small or not signal_big:
         return None
-
-    s_signal, s_mode, s_strength = signal_small_tf
-    b_signal, b_mode, b_strength = signal_big_tf
-
-    if s_signal == b_signal:
-        if "Strong" in [s_strength, b_strength]:
-            strength = "Strong Confirmed"
-        elif "Confirmed" in [s_strength, b_strength]:
-            strength = "Confirmed"
-        elif "Classic" in [s_strength, b_strength]:
-            strength = "Classic Confirmed"
-        else:
-            strength = "Normal"
-
+    s_sig, s_mode, s_str = signal_small
+    b_sig, b_mode, b_str = signal_big
+    if s_sig == b_sig:
+        strength = "Strong Confirmed" if "Strong" in [s_str, b_str] else "Confirmed"
         mode = f"{s_mode}+{b_mode}"
-        tf_info = f"[{tf_small} + {tf_big}]"
-
-        return s_signal, strength, f"{mode} MTF {tf_info}"
-
+        return s_sig, strength, mode
     return None
 
 
@@ -224,93 +198,44 @@ def scan_once():
     total_signals = 0
     for symbol in SYMBOLS:
         try:
-            df_small = get_klines(symbol, TIMEFRAMES[0])
-            df_big = get_klines(symbol, TIMEFRAMES[2])
-            if df_small.empty or df_big.empty:
+            df_15m = get_klines(symbol, "15m")
+            df_1h = get_klines(symbol, "1h")
+            if df_15m.empty or df_1h.empty:
                 continue
 
-            res_small = detect_signal(df_small, interval=TIMEFRAMES[0])
-            res_big = detect_signal(df_big, interval=TIMEFRAMES[2])
-            result = confirm_signal(res_small, res_big, TIMEFRAMES[0], TIMEFRAMES[2])
+            res_15m = detect_signal_15m(df_15m)
+            res_1h = detect_signal(df_1h)
+            result = confirm_signal(res_15m, res_1h)
 
-            if result:
-                signal, strength, mode = result
+            if not result:
+                continue
 
-                if last_signals.get(symbol) == signal:
-                    continue
+            signal, strength, mode = result
+            if last_signals.get(symbol) == signal:
+                continue
 
-                allowed_strength = ["Strong", "Confirmed", "Classic", "Strong Confirmed", "Classic Confirmed"]
-                if strength not in allowed_strength:
-                    continue
+            last = df_15m.iloc[-1]
+            entry = last["close"]
+            tp = entry * (1 + TP_PERCENT if signal == "BUY" else 1 - TP_PERCENT)
+            sl = entry * (1 - SL_PERCENT if signal == "BUY" else 1 + SL_PERCENT)
+            emoji = "🟢" if signal == "BUY" else "🔴"
 
-                last = df_small.iloc[-1]
-
-                try:
-                    atr_calc = ta.volatility.AverageTrueRange(
-                        high=df_small["high"], low=df_small["low"], close=df_small["close"], window=14
-                    )
-                    atr_series = atr_calc.average_true_range()
-                    atr = float(atr_series.iloc[-1]) if not atr_series.isna().all() else 0.0
-                except Exception:
-                    atr = 0.0
-
-                details = {
-                    "atr": float(atr),
-                    "rsi": float(df_small["rsi"].iloc[-1]) if "rsi" in df_small.columns else None,
-                    "macd": float(df_small["macd"].iloc[-1]) if "macd" in df_small.columns else None,
-                    "macd_signal": float(df_small["macd_signal"].iloc[-1]) if "macd_signal" in df_small.columns else None,
-                    "volume_ratio": float(df_small["volume_ratio"].iloc[-1]) if "volume_ratio" in df_small.columns else 1.0,
-                    "ema50": float(df_small["ema50"].iloc[-1]) if "ema50" in df_small.columns else float(df_small["close"].iloc[-1])
-                }
-
-                close_price = float(last["close"])
-                if signal == "BUY":
-                    entry = close_price
-                    tp = entry + (details["atr"] * TP_MULTIPLIER)
-                    sl = entry - (details["atr"] * SL_MULTIPLIER)
-                    emoji = "🟢"
-                else:
-                    entry = close_price
-                    tp = entry - (details["atr"] * TP_MULTIPLIER)
-                    sl = entry + (details["atr"] * SL_MULTIPLIER)
-                    emoji = "🔴"
-
-                total_signals += 1
-                last_signals[symbol] = signal
-
-                # 🟢 Label kekuatan sinyal
-                if "Strong" in strength:
-                    strength_label = "💪 *Kuat*"
-                elif "Confirmed" in strength:
-                    strength_label = "⚡ *Sedang*"
-                else:
-                    strength_label = "⚪ *Lemah*"
-
-                rsi_str = f"{details['rsi']:.2f}" if details['rsi'] is not None else "N/A"
-                macd_str = f"{details['macd']:.4f}" if details['macd'] is not None else "N/A"
-                macd_sig_str = f"{details['macd_signal']:.4f}" if details['macd_signal'] is not None else "N/A"
-
-                msg = (
-                    f"{emoji} *{signal} Signal*\n"
-                    f"Strength: {strength_label}\n"
-                    f"Mode: `{mode}`\n"
-                    f"Pair: `{symbol}` | TF: `{TIMEFRAMES[0]} & {TIMEFRAMES[2]}`\n"
-                    f"Entry: `{entry:.4f}`\n"
-                    f"TP: `{tp:.4f}` | SL: `{sl:.4f}`\n"
-                    f"ATR: {details['atr']:.4f}\n"
-                    f"RSI: {rsi_str}\n"
-                    f"MACD: {macd_str} | Signal: {macd_sig_str}\n"
-                    f"Volume: {details['volume_ratio']:.2f}x rata-rata\n"
-                    f"EMA50: {details['ema50']:.2f}\n"
-                    f"Time: {last['close_time'].strftime('%Y-%m-%d %H:%M:%S UTC')}\n\n"
-                    "_Info only — no auto order._"
-                )
-
-                send_message(msg)
-                logging.info(f"{symbol} {signal} ({strength}) {mode}")
+            msg = (
+                f"{emoji} *{signal} Signal*\n"
+                f"Strength: {strength}\n"
+                f"Mode: `{mode}`\n"
+                f"Pair: `{symbol}` | TF: 15m+1h\n"
+                f"Entry: `{entry:.4f}`\nTP: `{tp:.4f}` | SL: `{sl:.4f}`\n"
+                f"RSI(opt): {last['rsi_smooth']:.2f} | VWAP_Div: {last['vwap_div']:.4f}\n"
+                f"Volume x: {last['volume_ratio']:.2f}\n"
+                f"Time: {last['close_time']}\n"
+            )
+            send_message(msg)
+            last_signals[symbol] = signal
+            total_signals += 1
 
         except Exception as e:
-            logging.error(f"Error {symbol}: {e}")
+            logging.error(f"{symbol} error: {e}")
     return total_signals
 
 
@@ -318,25 +243,12 @@ def scan_once():
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     load_last_signals()
-
-    send_message(
-        f"🚀 Combo+Booster aktif\n"
-        f"📊 *{len(SYMBOLS)} pair aktif* | TF: {', '.join(TIMEFRAMES)}\n"
-        f"⏱ Scan tiap *{SCAN_INTERVAL} menit*"
-    )
+    send_message(f"🚀 MrT Combo+Booster aktif\n🎯 VWAP Divergence + RSI Optimized ON\n⏱ Scan tiap {SCAN_INTERVAL} menit")
 
     while True:
-        start = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-        send_message(f"🚀 Mulai scan otomatis ({start} UTC)\n📊 {len(SYMBOLS)} pair | TF: {', '.join(TIMEFRAMES)}")
-
         total = scan_once()
         save_last_signals()
-
-        if total > 0:
-            send_message(f"✅ Scan selesai ({start}). {total} sinyal baru ditemukan.")
-        else:
-            send_message("✅ Scan selesai. 0 sinyal baru ditemukan.")
-
+        send_message(f"✅ Scan selesai. {total} sinyal baru ditemukan.")
         time.sleep(SCAN_INTERVAL * 60)
 
 
