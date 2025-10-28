@@ -21,7 +21,7 @@ SYMBOLS = [
 
 TP_MULTIPLIER = 1.5
 SL_MULTIPLIER = 1.0
-SCAN_INTERVAL = 15  # menit antar scan
+SCAN_INTERVAL = 5  # menit antar scan
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
@@ -68,13 +68,6 @@ def get_klines(symbol, interval="15m", limit=200):
     Ambil data candlestick (klines) dari OKX.
     Support retry otomatis dan fallback ke domain mirror jika diblokir.
     """
-    
-    df = pd.DataFrame(raw, columns=[
-    "open_time", "open", "high", "low", "close",
-    "volume", "volCcy", "volCcyQuote", "confirm"
-])
-print(symbol, interval, len(df))  # 🔍 Tambahkan baris ini
-
     # mapping interval OKX
     tf_map = {
         "1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m",
@@ -127,6 +120,7 @@ print(symbol, interval, len(df))  # 🔍 Tambahkan baris ini
                 df["close_time"] = df["open_time"]  # OKX tak kirim close_time
 
                 logging.info(f"✅ OKX data OK untuk {symbol} ({interval}) dari {base_url}")
+                print(symbol, interval, len(df))  # debug info jumlah data
                 return df
 
             except requests.exceptions.Timeout:
