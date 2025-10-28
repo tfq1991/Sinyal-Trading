@@ -68,6 +68,13 @@ def get_klines(symbol, interval="15m", limit=200):
     Ambil data candlestick (klines) dari OKX.
     Support retry otomatis dan fallback ke domain mirror jika diblokir.
     """
+    
+    df = pd.DataFrame(raw, columns=[
+    "open_time", "open", "high", "low", "close",
+    "volume", "volCcy", "volCcyQuote", "confirm"
+])
+print(symbol, interval, len(df))  # 🔍 Tambahkan baris ini
+
     # mapping interval OKX
     tf_map = {
         "1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m",
