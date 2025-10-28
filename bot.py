@@ -21,7 +21,7 @@ SYMBOLS = [
 
 TP_MULTIPLIER = 1.5
 SL_MULTIPLIER = 1.0
-SCAN_INTERVAL = 15  # menit antar scan
+SCAN_INTERVAL = 5  # menit antar scan
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
