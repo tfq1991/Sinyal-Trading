@@ -17,24 +17,23 @@ from datetime import datetime
 # === KONFIGURASI ===
 TIMEFRAMES = ["5m", "15m", "1h", "4h"]
 
-# === 50 Pair Utama di OKX ===
+# === 50 Pair Utama di OKX (beberapa duplikat dihapus) ===
 SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
     "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT",
     "TRXUSDT", "OKBUSDT", "LTCUSDT", "SHIBUSDT", "UNIUSDT",
     "ATOMUSDT", "BCHUSDT", "FILUSDT", "ETCUSDT", "APTUSDT",
     "NEARUSDT", "ARBUSDT", "OPUSDT", "ICPUSDT", "TONUSDT",
-    "AAVEUSDT", "SANDUSDT", "AAVEUSDT", "THETAUSDT", "EGLDUSDT",
-    "FLOWUSDT", "COREUSDT", "XTZUSDT", "MANAUSDT", "GALAUSDT",
-    "PEPEUSDT", "SNXUSDT", "CRVUSDT", "INJUSDT", "XLMUSDT",
-    "CFXUSDT", "CHZUSDT", "NEOUSDT", "INJUSDT", "COMPUSDT",
-    "IMXUSDT", "ZROUSDT", "ETCUSDT", "WLDUSDT", "SUIUSDT",
-    "PYTHUSDT"
+    "AAVEUSDT", "SANDUSDT", "THETAUSDT", "EGLDUSDT", "FLOWUSDT",
+    "COREUSDT", "XTZUSDT", "MANAUSDT", "GALAUSDT", "PEPEUSDT",
+    "SNXUSDT", "CRVUSDT", "INJUSDT", "XLMUSDT", "CFXUSDT",
+    "CHZUSDT", "NEOUSDT", "COMPUSDT", "IMXUSDT", "ZROUSDT",
+    "WLDUSDT", "SUIUSDT", "PYTHUSDT", "ETCUSDT"
 ]
 
 TP_MULTIPLIER = 1.5
 SL_MULTIPLIER = 1.0
-SCAN_INTERVAL = 15  # menit antar scan (ganti dari 5 ke 15)
+SCAN_INTERVAL = 15  # menit antar scan
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
@@ -56,31 +55,6 @@ def send_message(msg):
             logging.warning(f"Telegram API {resp.status_code}: {resp.text}")
     except Exception as e:
         logging.error(f"[ERROR] Gagal kirim pesan Telegram: {e}")
-
-# === MAIN LOOP ===
-def main():
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
-    load_last_signals()
-
-    send_message(
-        f"🚀 Combo+Booster aktif\n"
-        f"📊 *{len(SYMBOLS)} pair aktif* | TF: {', '.join(TIMEFRAMES)}\n"
-        f"⏱ Scan tiap *{SCAN_INTERVAL} menit*"
-    )
-
-    while True:
-        start = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-        send_message(f"🚀 Mulai scan otomatis ({start} UTC)\n📊 {len(SYMBOLS)} pair | TF: {', '.join(TIMEFRAMES)}")
-
-        total = scan_once()
-        save_last_signals()
-
-        if total > 0:
-            send_message(f"✅ Scan selesai ({start}). {total} sinyal baru ditemukan.")
-        else:
-            send_message(f"✅ Scan selesai. 0 sinyal baru ditemukan.")
-
-        time.sleep(SCAN_INTERVAL * 60)
 
 # === LAST SIGNALS PERSISTENCE ===
 def load_last_signals():
@@ -166,19 +140,28 @@ def get_klines(symbol, interval="15m", limit=200):
 def detect_signal(df, interval="1h"):
     """
     Hybrid VWAP-RSI Divergence + Fast Scalping Detection
+    Returns (signal, mode, strength)
     """
 
-    # === INDIKATOR DASAR (dari versi kamu) ===
-    df["ema50"] = ta.trend.EMAIndicator(df["close"], window=50).ema_indicator()
-    df["ema200"] = ta.trend.EMAIndicator(df["close"], window=200).ema_indicator()
-    df["rsi"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
-    df["vwap"] = ta.volume.VolumeWeightedAveragePrice(
-        high=df["high"], low=df["low"], close=df["close"], volume=df["volume"]
-    ).volume_weighted_average_price()
-    macd = ta.trend.MACD(df["close"], window_slow=26, window_fast=12, window_sign=9)
-    df["macd"] = macd.macd()
-    df["macd_signal"] = macd.macd_signal()
-    df["volume_ratio"] = df["volume"] / df["volume"].rolling(20).mean()
+    # Pastikan df memiliki cukup bar
+    if df.shape[0] < 50:
+        return None
+
+    # === INDIKATOR DASAR ===
+    try:
+        df["ema50"] = ta.trend.EMAIndicator(df["close"], window=50).ema_indicator()
+        df["ema200"] = ta.trend.EMAIndicator(df["close"], window=200).ema_indicator()
+        df["rsi"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
+        df["vwap"] = ta.volume.VolumeWeightedAveragePrice(
+            high=df["high"], low=df["low"], close=df["close"], volume=df["volume"]
+        ).volume_weighted_average_price()
+        macd = ta.trend.MACD(df["close"], window_slow=26, window_fast=12, window_sign=9)
+        df["macd"] = macd.macd()
+        df["macd_signal"] = macd.macd_signal()
+        df["volume_ratio"] = df["volume"] / df["volume"].rolling(20).mean()
+    except Exception as e:
+        logging.error(f"Indicator calc error: {e}")
+        return None
 
     # VWAP difference untuk divergence classic
     df["vwap_diff"] = df["close"] - df["vwap"]
@@ -202,7 +185,7 @@ def detect_signal(df, interval="1h"):
     last = df.iloc[-1]
     prev = df.iloc[-2]
 
-    # === 1️⃣ Logika Asli Kamu (VWAP-RSI Divergence Classic) ===
+    # === 1️⃣ VWAP-RSI Divergence Classic ===
     bullish_div = (last["close"] > prev["close"]) and (last["vwap_diff"] < prev["vwap_diff"])
     bearish_div = (last["close"] < prev["close"]) and (last["vwap_diff"] > prev["vwap_diff"])
 
@@ -235,9 +218,9 @@ def detect_signal(df, interval="1h"):
             signal, mode, strength = "SELL", "EMA9-21 Cross", "Scalp"
 
         # Bollinger breakout
-        if last["close"] > last["bb_high"] and last["volume_ratio"] > 1.2:
+        if last["close"] > last["bb_high"] and last.get("volume_ratio", 1.0) > 1.2:
             signal, mode, strength = "BUY", "Bollinger Breakout", "Fast"
-        elif last["close"] < last["bb_low"] and last["volume_ratio"] > 1.2:
+        elif last["close"] < last["bb_low"] and last.get("volume_ratio", 1.0) > 1.2:
             signal, mode, strength = "SELL", "Bollinger Breakout", "Fast"
 
         # StochRSI reversal
@@ -254,6 +237,7 @@ def confirm_signal(signal_small_tf, signal_big_tf, tf_small="5m", tf_big="1h"):
     Konfirmasi sinyal multi-timeframe (MTF).
     Menguatkan sinyal hanya jika arah sama (BUY/SELL)
     dan minimal salah satu strength adalah 'Strong', 'Confirmed', atau 'Classic'.
+    Returns (signal, combined_strength, combined_mode_string) or None
     """
 
     if not signal_small_tf or not signal_big_tf:
@@ -292,36 +276,66 @@ def scan_once():
             if df_small.empty or df_big.empty:
                 continue
 
-            res_small = detect_signal(df_small)
-            res_big = detect_signal(df_big)
+            res_small = detect_signal(df_small, interval=TIMEFRAMES[0])
+            res_big = detect_signal(df_big, interval=TIMEFRAMES[2])
             result = confirm_signal(res_small, res_big, TIMEFRAMES[0], TIMEFRAMES[2])
 
             if result:
-    signal, strength, mode, details = result
-    if last_signals.get(symbol) == signal:
-        continue  # abaikan duplikat
-    # === Filter hanya sinyal kuat / terkonfirmasi ===
-    allowed_strength = ["Strong", "Confirmed", "Classic"]
-    if strength not in allowed_strength:
-        logging.info(f"⚪ {symbol}: Sinyal {signal} ({strength}) dilewati (terlalu lemah).")
-        continue
+                # confirm_signal returns 3 values: (signal, strength, mode_str)
+                signal, strength, mode = result
 
-                total_signals += 1
-                last_signals[symbol] = signal
+                # abaikan duplikat
+                if last_signals.get(symbol) == signal:
+                    continue
+
+                # === Filter hanya sinyal kuat / terkonfirmasi ===
+                allowed_strength = ["Strong", "Confirmed", "Classic", "Strong Confirmed", "Classic Confirmed"]
+                if strength not in allowed_strength:
+                    logging.info(f"⚪ {symbol}: Sinyal {signal} ({strength}) dilewati (terlalu lemah).")
+                    continue
+
+                # Buat 'details' dari df_small supaya field yang dipakai tersedia
                 last = df_small.iloc[-1]
-                close_price = last["close"]
-                atr = details["atr"]
 
+                # Hitung ATR (periode 14) menggunakan ta
+                try:
+                    atr_calc = ta.volatility.AverageTrueRange(
+                        high=df_small["high"], low=df_small["low"], close=df_small["close"], window=14
+                    )
+                    atr_series = atr_calc.average_true_range()
+                    atr = float(atr_series.iloc[-1]) if not atr_series.isna().all() else 0.0
+                except Exception as e:
+                    logging.warning(f"ATR calc error for {symbol}: {e}")
+                    atr = 0.0
+
+                details = {
+                    "atr": float(atr),
+                    "rsi": float(df_small["rsi"].iloc[-1]) if "rsi" in df_small.columns else None,
+                    "macd": float(df_small["macd"].iloc[-1]) if "macd" in df_small.columns else None,
+                    "macd_signal": float(df_small["macd_signal"].iloc[-1]) if "macd_signal" in df_small.columns else None,
+                    "volume_ratio": float(df_small["volume_ratio"].iloc[-1]) if "volume_ratio" in df_small.columns else 1.0,
+                    "ema50": float(df_small["ema50"].iloc[-1]) if "ema50" in df_small.columns else float(df_small["close"].iloc[-1])
+                }
+
+                close_price = float(last["close"])
                 if signal == "BUY":
                     entry = close_price
-                    tp = entry + (atr * TP_MULTIPLIER)
-                    sl = entry - (atr * SL_MULTIPLIER)
+                    tp = entry + (details["atr"] * TP_MULTIPLIER)
+                    sl = entry - (details["atr"] * SL_MULTIPLIER)
                     emoji = "🟢"
                 else:
                     entry = close_price
-                    tp = entry - (atr * TP_MULTIPLIER)
-                    sl = entry + (atr * SL_MULTIPLIER)
+                    tp = entry - (details["atr"] * TP_MULTIPLIER)
+                    sl = entry + (details["atr"] * SL_MULTIPLIER)
                     emoji = "🔴"
+
+                total_signals += 1
+                last_signals[symbol] = signal
+
+                # Safety: format angka jika None
+                rsi_str = f"{details['rsi']:.2f}" if details['rsi'] is not None else "N/A"
+                macd_str = f"{details['macd']:.4f}" if details['macd'] is not None else "N/A"
+                macd_sig_str = f"{details['macd_signal']:.4f}" if details['macd_signal'] is not None else "N/A"
 
                 msg = (
                     f"{emoji} *{signal} Signal ({strength})*\n"
@@ -329,9 +343,9 @@ def scan_once():
                     f"Pair: `{symbol}` | TF: `{TIMEFRAMES[0]} & {TIMEFRAMES[2]}`\n"
                     f"Entry: `{entry:.4f}`\n"
                     f"TP: `{tp:.4f}` | SL: `{sl:.4f}`\n"
-                    f"ATR: {atr:.4f}\n"
-                    f"RSI-Kernel: {details['rsi']:.2f}\n"
-                    f"MACD: {details['macd']:.4f} | Signal: {details['macd_signal']:.4f}\n"
+                    f"ATR: {details['atr']:.4f}\n"
+                    f"RSI-Kernel: {rsi_str}\n"
+                    f"MACD: {macd_str} | Signal: {macd_sig_str}\n"
                     f"Volume: {details['volume_ratio']:.2f}x rata-rata\n"
                     f"EMA50: {details['ema50']:.2f}\n"
                     f"Time: {last['close_time'].strftime('%Y-%m-%d %H:%M:%S UTC')}\n\n"
@@ -348,18 +362,24 @@ def scan_once():
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     load_last_signals()
-    send_message(f"🚀 Combo+Booster aktif\n📊 {len(SYMBOLS)} pair | TF: {', '.join(TIMEFRAMES)}\n⏱ Scan tiap {SCAN_INTERVAL} menit")
+
+    send_message(
+        f"🚀 Combo+Booster aktif\n"
+        f"📊 *{len(SYMBOLS)} pair aktif* | TF: {', '.join(TIMEFRAMES)}\n"
+        f"⏱ Scan tiap *{SCAN_INTERVAL} menit*"
+    )
 
     while True:
         start = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-        logging.info(f"Mulai scan ({start} UTC)")
+        send_message(f"🚀 Mulai scan otomatis ({start} UTC)\n📊 {len(SYMBOLS)} pair | TF: {', '.join(TIMEFRAMES)}")
+
         total = scan_once()
         save_last_signals()
 
         if total > 0:
             send_message(f"✅ Scan selesai ({start}). {total} sinyal baru ditemukan.")
         else:
-            logging.info("Tidak ada sinyal baru kali ini.")
+            send_message(f"✅ Scan selesai. 0 sinyal baru ditemukan.")
 
         time.sleep(SCAN_INTERVAL * 60)
 
