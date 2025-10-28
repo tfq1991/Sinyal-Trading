@@ -1,4 +1,8 @@
-# bot.py
+# =====================================
+# ===  MrT Scalper Combo + Booster  ===
+# ===  OKX + MEXC fallback + Debug  ===
+# =====================================
+
 import logging
 import os
 import sys
@@ -12,8 +16,6 @@ from datetime import datetime
 
 # === KONFIGURASI ===
 TIMEFRAMES = ["5m", "15m", "1h", "4h"]
-
-# Hanya 10 pair utama di OKX
 SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
     "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT"
@@ -21,7 +23,7 @@ SYMBOLS = [
 
 TP_MULTIPLIER = 1.5
 SL_MULTIPLIER = 1.0
-SCAN_INTERVAL = 5  # menit antar scan
+SCAN_INTERVAL = 15  # 🔁 scan tiap 15 menit
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
@@ -44,14 +46,13 @@ def send_message(msg):
     except Exception as e:
         logging.error(f"[ERROR] Gagal kirim pesan Telegram: {e}")
 
-# === LAST SIGNALS PERSISTENCE ===
+# === LAST SIGNALS ===
 def load_last_signals():
     global last_signals
     try:
         if os.path.exists(LAST_SIGNALS_FILE):
             with open(LAST_SIGNALS_FILE, "r") as f:
                 last_signals.update(json.load(f))
-                logging.info(f"Last signals loaded: {len(last_signals)} entries")
     except Exception as e:
         logging.error(f"Gagal memuat {LAST_SIGNALS_FILE}: {e}")
 
@@ -62,69 +63,78 @@ def save_last_signals():
     except Exception as e:
         logging.error(f"Gagal menyimpan {LAST_SIGNALS_FILE}: {e}")
 
-# === GET KLINES (OKX) ===
+# === GET KLINES (OKX + MEXC fallback) ===
 def get_klines(symbol, interval="15m", limit=200):
-    """
-    Ambil data candlestick (klines) dari OKX.
-    Support retry otomatis dan fallback ke domain mirror jika diblokir.
-    """
+    """Ambil data candlestick, prioritas OKX → fallback MEXC"""
     tf_map = {
         "1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m",
-        "1h": "1H", "4h": "4H", "6h": "6H", "12h": "12H",
-        "1d": "1D", "1w": "1W"
+        "1h": "1H", "4h": "4H", "6h": "6H", "12h": "12H", "1d": "1D", "1w": "1W"
     }
-    interval = tf_map.get(interval, "15m")
+    interval_okx = tf_map.get(interval, "15m")
 
-    # OKX pakai format BTC-USDT
-    if "-" not in symbol and symbol.endswith("USDT"):
-        symbol = symbol.replace("USDT", "-USDT")
+    # Format OKX pakai tanda "-"
+    okx_symbol = symbol.replace("USDT", "-USDT")
 
-    endpoints = [
+    okx_endpoints = [
         "https://www.okx.com",
         "https://www.okx.cab",
         "https://www.okx.co",
         "https://aws.okx.com",
     ]
 
-    for base_url in endpoints:
-        for attempt in range(3):
-            try:
-                url = f"{base_url}/api/v5/market/candles"
-                params = {"instId": symbol, "bar": interval, "limit": limit}
-                response = requests.get(url, params=params, timeout=10)
-                response.raise_for_status()
-                data = response.json()
-
-                if "data" not in data or len(data["data"]) == 0:
-                    logging.warning(f"⚠️ Data kosong dari {base_url} untuk {symbol}")
-                    continue
-
-                # urutkan naik (awal → akhir)
+    # === 1️⃣ Coba ambil dari OKX ===
+    for base_url in okx_endpoints:
+        try:
+            url = f"{base_url}/api/v5/market/candles"
+            params = {"instId": okx_symbol, "bar": interval_okx, "limit": limit}
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            if "data" in data and len(data["data"]) > 0:
                 raw = data["data"][::-1]
                 df = pd.DataFrame(raw, columns=[
                     "open_time", "open", "high", "low", "close",
                     "volume", "volCcy", "volCcyQuote", "confirm"
                 ])
-
                 for col in ["open", "high", "low", "close", "volume"]:
                     df[col] = df[col].astype(float)
-
                 df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
                 df["close_time"] = df["open_time"]
-
-                logging.info(f"✅ OKX data OK untuk {symbol} ({interval}), {len(df)} bar")
+                logging.info(f"✅ OKX data OK {symbol} ({interval}), {len(df)} bar")
                 return df
+        except Exception as e:
+            logging.warning(f"[OKX ERROR] {symbol} @ {base_url}: {e}")
+            time.sleep(1)
 
-            except Exception as e:
-                logging.error(f"[ERROR] {symbol} ({interval}) di {base_url}: {e}")
-                time.sleep(2)
+    # === 2️⃣ Fallback ke MEXC ===
+    try:
+        url = "https://api.mexc.com/api/v3/klines"
+        params = {"symbol": symbol, "interval": interval, "limit": limit}
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        if len(data) == 0:
+            logging.warning(f"⚠️ MEXC data kosong untuk {symbol}")
+            return pd.DataFrame()
 
-        logging.warning(f"🚫 Gagal 3x di {base_url} untuk {symbol}")
+        df = pd.DataFrame(data, columns=[
+            "open_time", "open", "high", "low", "close", "volume",
+            "close_time", "quote_asset_volume", "num_trades",
+            "taker_buy_base", "taker_buy_quote", "ignore"
+        ])
+        for col in ["open", "high", "low", "close", "volume"]:
+            df[col] = df[col].astype(float)
+        df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
+        df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
 
-    logging.error(f"❌ Semua endpoint OKX gagal untuk {symbol}")
-    return pd.DataFrame()
+        logging.info(f"🟡 MEXC fallback OK {symbol} ({interval}), {len(df)} bar")
+        return df
 
-# === DETEKSI SINYAL ===
+    except Exception as e:
+        logging.error(f"❌ Fallback MEXC gagal {symbol}: {e}")
+        return pd.DataFrame()
+
+# === DETEKSI SINYAL (RSI versi kamu) ===
 def detect_signal(df):
     df["rsi"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
     df["ema50"] = ta.trend.EMAIndicator(df["close"], window=50).ema_indicator()
@@ -149,23 +159,25 @@ def detect_signal(df):
         return np.convolve(series, kernel, mode='same')
 
     df["rsi_kernel"] = kernel_smooth(df["rsi"].fillna(method="bfill"))
-    df["atr"] = ta.volatility.AverageTrueRange(
-        df["high"], df["low"], df["close"], window=14
-    ).average_true_range()
+    df["atr"] = ta.volatility.AverageTrueRange(df["high"], df["low"], df["close"], window=14).average_true_range()
+
+    rsi_now = df["rsi_kernel"].iloc[-1]
+    macd_now = df["macd"].iloc[-1]
+    macd_sig = df["macd_signal"].iloc[-1]
 
     signal, strength, mode = None, None, None
-    if bullish_div and df["rsi_kernel"].iloc[-1] < 40 and df["macd"].iloc[-1] > df["macd_signal"].iloc[-1]:
+    if bullish_div and rsi_now < 40 and macd_now > macd_sig:
         signal, mode = "BUY", "VWAP-RSI-Kernel"
         strength = "Strong" if df["volume_ratio"].iloc[-1] > 1.5 else "Normal"
-    elif bearish_div and df["rsi_kernel"].iloc[-1] > 60 and df["macd"].iloc[-1] < df["macd_signal"].iloc[-1]:
+    elif bearish_div and rsi_now > 60 and macd_now < macd_sig:
         signal, mode = "SELL", "VWAP-RSI-Kernel"
         strength = "Strong" if df["volume_ratio"].iloc[-1] > 1.5 else "Normal"
 
     if signal:
         details = {
-            "rsi": df["rsi_kernel"].iloc[-1],
-            "macd": df["macd"].iloc[-1],
-            "macd_signal": df["macd_signal"].iloc[-1],
+            "rsi": rsi_now,
+            "macd": macd_now,
+            "macd_signal": macd_sig,
             "volume_ratio": df["volume_ratio"].iloc[-1],
             "ema50": df["ema50"].iloc[-1],
             "atr": df["atr"].iloc[-1],
@@ -185,21 +197,26 @@ def confirm_signal(signal_small_tf, signal_big_tf):
 # === SCAN SEKALI ===
 def scan_once():
     total_signals = 0
+    debug_text = "📊 *DEBUG INFO (RSI & MACD)*\n"
+
     for symbol in SYMBOLS:
         try:
             df_small = get_klines(symbol, TIMEFRAMES[0])
             df_big = get_klines(symbol, TIMEFRAMES[2])
-            if df_small.empty or df_big.empty:
+            if df_small.empty or len(df_small) < 50 or df_big.empty or len(df_big) < 50:
                 continue
 
             res_small = detect_signal(df_small)
             res_big = detect_signal(df_big)
             result = confirm_signal(res_small, res_big)
 
+            if not df_small.empty:
+                debug_text += f"• `{symbol}` RSI: {df_small['rsi'].iloc[-1]:.2f} | MACD: {df_small['macd'].iloc[-1]:.4f}\n"
+
             if result:
                 signal, strength, mode, details = result
                 if last_signals.get(symbol) == signal:
-                    continue  # abaikan duplikat
+                    continue
 
                 total_signals += 1
                 last_signals[symbol] = signal
@@ -233,17 +250,18 @@ def scan_once():
                     "_Info only — no auto order._"
                 )
                 send_message(msg)
-                logging.info(f"{symbol} {signal} ({strength}) {mode}")
 
         except Exception as e:
             logging.error(f"Error {symbol}: {e}")
+
+    send_message(debug_text)
     return total_signals
 
 # === MAIN LOOP ===
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     load_last_signals()
-    send_message(f"🚀 Combo+Booster aktif\n📊 {len(SYMBOLS)} pair | TF: {', '.join(TIMEFRAMES)}\n⏱ Scan tiap {SCAN_INTERVAL} menit")
+    send_message(f"🚀 Combo+Booster aktif\n📊 {len(SYMBOLS)} pair | TF: {', '.join(TIMEFRAMES)}\n⏱ Scan tiap {SCAN_INTERVAL} menit\n🌐 Fallback: OKX → MEXC")
 
     while True:
         start = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
@@ -254,8 +272,7 @@ def main():
         if total > 0:
             send_message(f"✅ Scan selesai ({start}). {total} sinyal baru ditemukan.")
         else:
-            logging.info("Tidak ada sinyal baru kali ini.")
-
+            send_message(f"☑️ Scan selesai ({start}). 0 sinyal baru ditemukan.")
         time.sleep(SCAN_INTERVAL * 60)
 
 if __name__ == "__main__":
