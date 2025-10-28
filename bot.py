@@ -299,20 +299,28 @@ def scan_once():
                 macd_str = f"{details['macd']:.4f}" if details['macd'] is not None else "N/A"
                 macd_sig_str = f"{details['macd_signal']:.4f}" if details['macd_signal'] is not None else "N/A"
 
+# Tentukan label kekuatan sinyal
+if "Strong" in strength:
+    strength_label = "💪 *Kuat*"
+elif "Confirmed" in strength:
+    strength_label = "⚡ *Sedang*"
+else:
+    strength_label = "⚪ *Lemah*"
+
                 msg = (
-                    f"{emoji} *{signal} Signal ({strength})*\n"
-                    f"Mode: `{mode}`\n"
-                    f"Pair: `{symbol}` | TF: `{TIMEFRAMES[0]} & {TIMEFRAMES[2]}`\n"
-                    f"Entry: `{entry:.4f}`\n"
-                    f"TP: `{tp:.4f}` | SL: `{sl:.4f}`\n"
-                    f"ATR: {details['atr']:.4f}\n"
-                    f"RSI-Kernel: {rsi_str}\n"
-                    f"MACD: {macd_str} | Signal: {macd_sig_str}\n"
-                    f"Volume: {details['volume_ratio']:.2f}x rata-rata\n"
-                    f"EMA50: {details['ema50']:.2f}\n"
-                    f"Time: {last['close_time'].strftime('%Y-%m-%d %H:%M:%S UTC')}\n\n"
-                    "_Info only — no auto order._"
-                )
+    f"{emoji} *{signal} Signal*\n"
+    f"Strength: {strength_label}\n"
+    f"Mode: `{mode}`\n"
+    f"Pair: `{symbol}` | TF: `{TIMEFRAMES[0]} & {TIMEFRAMES[2]}`\n"
+    f"Entry: `{entry:.4f}`\n"
+    f"TP: `{tp:.4f}` | SL: `{sl:.4f}`\n"
+    f"ATR: {details['atr']:.4f}\n"
+    f"RSI: {rsi_str}\n"
+    f"MACD: {macd_str} | Signal: {macd_sig_str}\n"
+    f"Volume: {details['volume_ratio']:.2f}x rata-rata\n"
+    f"EMA50: {details['ema50']:.2f}\n"
+    f"Time: {last['close_time'].strftime('%Y-%m-%d %H:%M:%S UTC')}\n\n"
+    "_Info only — no auto order._")
                 send_message(msg)
                 logging.info(f"{symbol} {signal} ({strength}) {mode}")
 
@@ -349,3 +357,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
