@@ -6,5 +6,5 @@
   ],
   "tp_multiplier": 1.5,
   "sl_multiplier": 1.0,
-  "scan_interval": 5
+  "scan_interval": 15
 }
