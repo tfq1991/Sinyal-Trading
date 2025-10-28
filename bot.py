@@ -12,11 +12,11 @@ from datetime import datetime
 
 # === KONFIGURASI ===
 TIMEFRAMES = ["5m", "15m", "1h", "4h"]
+
+# Hanya 10 pair utama di OKX
 SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
-    "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT",
-    "TRXUSDT", "UNIUSDT", "SUIUSDT", "SHIBUSDT", "MATICUSDT",
-    "LTCUSDT", "BCHUSDT", "ICPUSDT", "ALGOUSDT", "AAVEUSDT"
+    "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT"
 ]
 
 TP_MULTIPLIER = 1.5
