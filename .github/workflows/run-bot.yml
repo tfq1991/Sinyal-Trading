@@ -3,7 +3,7 @@ name: Run Combo+Booster Bot
 on:
   workflow_dispatch:        # bisa dijalankan manual dari GitHub
   schedule:
-    - cron: "*/15 * * * *"  # jalankan setiap 15 menit (UTC)
+    - cron: "*/5 * * * *"  # jalankan setiap 15 menit (UTC)
 
 jobs:
   run:
