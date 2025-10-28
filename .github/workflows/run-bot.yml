@@ -1,17 +1,13 @@
-name: Run Combo+Booster Bot
+name: Jalankan Scanner Bot
 
 on:
-  workflow_dispatch:        # bisa dijalankan manual dari GitHub
   schedule:
-    - cron: "*/5 * * * *"  # jalankan setiap 15 menit (UTC)
+    - cron: "*/15 * * * *"   # Jalankan setiap 5 menit
+  workflow_dispatch:         # Bisa dijalankan manual juga
 
 jobs:
-  run:
+  run-bot:
     runs-on: ubuntu-latest
-
-    env:
-      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-      CHAT_ID: ${{ secrets.CHAT_ID }}
 
     steps:
       - name: Checkout repository
@@ -24,9 +20,59 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
+          pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Jalankan scanner bot
+      - name: Jalankan scanner bot (sekali scan + summary)
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
-          python bot.py
+          python - <<'EOF'
+          import logging, time
+          from datetime import datetime
+          from bot import scan_once, load_last_signals, save_last_signals, send_message
+
+          logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+
+          def format_summary(summary_dict):
+              """Format summary sinyal ke bentuk pesan Telegram"""
+              naik = summary_dict.get("buy", 0)
+              turun = summary_dict.get("sell", 0)
+              total = naik + turun
+              return (
+                  f"📊 *Summary Sinyal Baru:*\n"
+                  f"🟢 Naik (BUY): {naik}\n"
+                  f"🔴 Turun (SELL): {turun}\n"
+                  f"📈 Total: {total}"
+              )
+
+          try:
+              start_time = datetime.utcnow()
+              load_last_signals()
+              send_message(f"🚀 Mulai scan otomatis ({start_time.strftime('%Y-%m-%d %H:%M:%S')} UTC)")
+
+              # Jalankan scan sekali
+              result = scan_once()
+              save_last_signals()
+
+              if isinstance(result, dict):  # Jika scan_once return dict hasil sinyal
+                  summary_text = format_summary(result)
+                  send_message(f"✅ Scan selesai.\n\n{summary_text}")
+              elif isinstance(result, int):
+                  send_message(f"✅ Scan selesai. {result} sinyal baru ditemukan.")
+              else:
+                  send_message("✅ Scan selesai. Tidak ada sinyal baru.")
+
+              end_time = datetime.utcnow()
+              durasi = round((end_time - start_time).total_seconds(), 2)
+              logging.info(f"Scan selesai dalam {durasi} detik.")
+
+          except Exception as e:
+              logging.error(f"Terjadi error: {e}")
+              try:
+                  send_message(f"❌ *Error saat scanning:* {e}")
+              except Exception:
+                  pass
+              raise SystemExit(1)
+          EOF
