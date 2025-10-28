@@ -16,7 +16,7 @@ from datetime import datetime
 # === KONFIGURASI ===
 TIMEFRAMES = ["5m", "15m", "1h", "4h"]
 
-# === 50 Pair Utama di OKX (beberapa duplikat dihapus) ===
+# === 50 Pair Utama di OKX ===
 SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
     "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT",
@@ -154,7 +154,6 @@ def detect_signal(df, interval="1h"):
         return None
 
     df["vwap_diff"] = df["close"] - df["vwap"]
-
     df["ema9"] = ta.trend.EMAIndicator(df["close"], window=9).ema_indicator()
     df["ema21"] = ta.trend.EMAIndicator(df["close"], window=21).ema_indicator()
 
@@ -190,22 +189,6 @@ def detect_signal(df, interval="1h"):
         signal, mode, strength = "BUY", "VWAP-MACD", "Confirmed"
     elif last["close"] < last["vwap"] and last["macd"] < last["macd_signal"]:
         signal, mode, strength = "SELL", "VWAP-MACD", "Confirmed"
-
-    if interval in ["1m", "3m", "5m", "15m"]:
-        if df["ema9"].iloc[-2] < df["ema21"].iloc[-2] and df["ema9"].iloc[-1] > df["ema21"].iloc[-1]:
-            signal, mode, strength = "BUY", "EMA9-21 Cross", "Scalp"
-        elif df["ema9"].iloc[-2] > df["ema21"].iloc[-2] and df["ema9"].iloc[-1] < df["ema21"].iloc[-1]:
-            signal, mode, strength = "SELL", "EMA9-21 Cross", "Scalp"
-
-        if last["close"] > last["bb_high"] and last.get("volume_ratio", 1.0) > 1.2:
-            signal, mode, strength = "BUY", "Bollinger Breakout", "Fast"
-        elif last["close"] < last["bb_low"] and last.get("volume_ratio", 1.0) > 1.2:
-            signal, mode, strength = "SELL", "Bollinger Breakout", "Fast"
-
-        if last["stoch_rsi_k"] < 20 and last["stoch_rsi_d"] < 20 and last["macd"] > last["macd_signal"]:
-            signal, mode, strength = "BUY", "StochRSI Reversal", "Short"
-        elif last["stoch_rsi_k"] > 80 and last["stoch_rsi_d"] > 80 and last["macd"] < last["macd_signal"]:
-            signal, mode, strength = "SELL", "StochRSI Reversal", "Short"
 
     return signal, mode, strength
 
@@ -295,32 +278,34 @@ def scan_once():
                 total_signals += 1
                 last_signals[symbol] = signal
 
+                # 🟢 Label kekuatan sinyal
+                if "Strong" in strength:
+                    strength_label = "💪 *Kuat*"
+                elif "Confirmed" in strength:
+                    strength_label = "⚡ *Sedang*"
+                else:
+                    strength_label = "⚪ *Lemah*"
+
                 rsi_str = f"{details['rsi']:.2f}" if details['rsi'] is not None else "N/A"
                 macd_str = f"{details['macd']:.4f}" if details['macd'] is not None else "N/A"
                 macd_sig_str = f"{details['macd_signal']:.4f}" if details['macd_signal'] is not None else "N/A"
 
-# Tentukan label kekuatan sinyal
-if "Strong" in strength:
-    strength_label = "💪 *Kuat*"
-elif "Confirmed" in strength:
-    strength_label = "⚡ *Sedang*"
-else:
-    strength_label = "⚪ *Lemah*"
-
                 msg = (
-    f"{emoji} *{signal} Signal*\n"
-    f"Strength: {strength_label}\n"
-    f"Mode: `{mode}`\n"
-    f"Pair: `{symbol}` | TF: `{TIMEFRAMES[0]} & {TIMEFRAMES[2]}`\n"
-    f"Entry: `{entry:.4f}`\n"
-    f"TP: `{tp:.4f}` | SL: `{sl:.4f}`\n"
-    f"ATR: {details['atr']:.4f}\n"
-    f"RSI: {rsi_str}\n"
-    f"MACD: {macd_str} | Signal: {macd_sig_str}\n"
-    f"Volume: {details['volume_ratio']:.2f}x rata-rata\n"
-    f"EMA50: {details['ema50']:.2f}\n"
-    f"Time: {last['close_time'].strftime('%Y-%m-%d %H:%M:%S UTC')}\n\n"
-    "_Info only — no auto order._")
+                    f"{emoji} *{signal} Signal*\n"
+                    f"Strength: {strength_label}\n"
+                    f"Mode: `{mode}`\n"
+                    f"Pair: `{symbol}` | TF: `{TIMEFRAMES[0]} & {TIMEFRAMES[2]}`\n"
+                    f"Entry: `{entry:.4f}`\n"
+                    f"TP: `{tp:.4f}` | SL: `{sl:.4f}`\n"
+                    f"ATR: {details['atr']:.4f}\n"
+                    f"RSI: {rsi_str}\n"
+                    f"MACD: {macd_str} | Signal: {macd_sig_str}\n"
+                    f"Volume: {details['volume_ratio']:.2f}x rata-rata\n"
+                    f"EMA50: {details['ema50']:.2f}\n"
+                    f"Time: {last['close_time'].strftime('%Y-%m-%d %H:%M:%S UTC')}\n\n"
+                    "_Info only — no auto order._"
+                )
+
                 send_message(msg)
                 logging.info(f"{symbol} {signal} ({strength}) {mode}")
 
@@ -357,4 +342,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
