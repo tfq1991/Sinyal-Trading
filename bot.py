@@ -163,61 +163,123 @@ def get_klines(symbol, interval="15m", limit=200):
     return pd.DataFrame()
 
 # === DETEKSI SINYAL ===
-def detect_signal(df):
-    df["rsi"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
+def detect_signal(df, interval="1h"):
+    """
+    Hybrid VWAP-RSI Divergence + Fast Scalping Detection
+    """
+
+    # === INDIKATOR DASAR (dari versi kamu) ===
     df["ema50"] = ta.trend.EMAIndicator(df["close"], window=50).ema_indicator()
-    macd = ta.trend.MACD(df["close"])
+    df["ema200"] = ta.trend.EMAIndicator(df["close"], window=200).ema_indicator()
+    df["rsi"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
+    df["vwap"] = ta.volume.VolumeWeightedAveragePrice(
+        high=df["high"], low=df["low"], close=df["close"], volume=df["volume"]
+    ).volume_weighted_average_price()
+    macd = ta.trend.MACD(df["close"], window_slow=26, window_fast=12, window_sign=9)
     df["macd"] = macd.macd()
     df["macd_signal"] = macd.macd_signal()
     df["volume_ratio"] = df["volume"] / df["volume"].rolling(20).mean()
 
-    df["vwap"] = (df["close"] * df["volume"]).cumsum() / df["volume"].cumsum()
+    # VWAP difference untuk divergence classic
     df["vwap_diff"] = df["close"] - df["vwap"]
 
-    if len(df) < 3:
-        return None
+    # === Tambahan indikator TF kecil ===
+    df["ema9"] = ta.trend.EMAIndicator(df["close"], window=9).ema_indicator()
+    df["ema21"] = ta.trend.EMAIndicator(df["close"], window=21).ema_indicator()
 
-    last, prev = df.iloc[-1], df.iloc[-2]
+    stoch_rsi = ta.momentum.StochRSIIndicator(df["close"], window=14, smooth1=3, smooth2=3)
+    df["stoch_rsi_k"] = stoch_rsi.stochrsi_k()
+    df["stoch_rsi_d"] = stoch_rsi.stochrsi_d()
+
+    bb = ta.volatility.BollingerBands(df["close"], window=20, window_dev=2)
+    df["bb_high"] = bb.bollinger_hband()
+    df["bb_low"] = bb.bollinger_lband()
+
+    # === Inisialisasi ===
+    signal, mode, strength = None, None, "Neutral"
+
+    # --- Ambil data terakhir & sebelumnya ---
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
+
+    # === 1️⃣ Logika Asli Kamu (VWAP-RSI Divergence Classic) ===
     bullish_div = (last["close"] > prev["close"]) and (last["vwap_diff"] < prev["vwap_diff"])
     bearish_div = (last["close"] < prev["close"]) and (last["vwap_diff"] > prev["vwap_diff"])
 
-    def kernel_smooth(series, kernel_size=5):
-        kernel = np.exp(-0.5 * (np.linspace(-2, 2, kernel_size) ** 2))
-        kernel /= kernel.sum()
-        return np.convolve(series, kernel, mode='same')
+    if bullish_div and last["rsi"] < 40 and last["macd"] > last["macd_signal"]:
+        signal, mode, strength = "BUY", "VWAP-RSI-Kernel", "Classic"
+    elif bearish_div and last["rsi"] > 60 and last["macd"] < last["macd_signal"]:
+        signal, mode, strength = "SELL", "VWAP-RSI-Kernel", "Classic"
 
-    df["rsi_kernel"] = kernel_smooth(df["rsi"].fillna(method="bfill"))
-    df["atr"] = ta.volatility.AverageTrueRange(
-        df["high"], df["low"], df["close"], window=14
-    ).average_true_range()
+    # === 2️⃣ Logika Tren Besar (EMA50/200 + MACD + RSI) ===
+    bullish_trend = last["ema50"] > last["ema200"]
+    bearish_trend = last["ema50"] < last["ema200"]
 
-    signal, strength, mode = None, None, None
-    if bullish_div and df["rsi_kernel"].iloc[-1] < 40 and df["macd"].iloc[-1] > df["macd_signal"].iloc[-1]:
-        signal, mode = "BUY", "VWAP-RSI-Kernel"
-        strength = "Strong" if df["volume_ratio"].iloc[-1] > 1.5 else "Normal"
-    elif bearish_div and df["rsi_kernel"].iloc[-1] > 60 and df["macd"].iloc[-1] < df["macd_signal"].iloc[-1]:
-        signal, mode = "SELL", "VWAP-RSI-Kernel"
-        strength = "Strong" if df["volume_ratio"].iloc[-1] > 1.5 else "Normal"
+    if bullish_trend and last["macd"] > last["macd_signal"] and last["rsi"] > 50:
+        signal, mode, strength = "BUY", "Trend-MACD-RSI", "Strong"
+    elif bearish_trend and last["macd"] < last["macd_signal"] and last["rsi"] < 50:
+        signal, mode, strength = "SELL", "Trend-MACD-RSI", "Strong"
 
-    if signal:
-        details = {
-            "rsi": df["rsi_kernel"].iloc[-1],
-            "macd": df["macd"].iloc[-1],
-            "macd_signal": df["macd_signal"].iloc[-1],
-            "volume_ratio": df["volume_ratio"].iloc[-1],
-            "ema50": df["ema50"].iloc[-1],
-            "atr": df["atr"].iloc[-1],
-        }
-        return signal, strength, mode, details
-    return None
+    # === 3️⃣ VWAP Confluence ===
+    if last["close"] > last["vwap"] and last["macd"] > last["macd_signal"]:
+        signal, mode, strength = "BUY", "VWAP-MACD", "Confirmed"
+    elif last["close"] < last["vwap"] and last["macd"] < last["macd_signal"]:
+        signal, mode, strength = "SELL", "VWAP-MACD", "Confirmed"
+
+    # === 4️⃣ Tambahan Logika TF Kecil (Scalping Layer) ===
+    if interval in ["1m", "3m", "5m", "15m"]:
+        # EMA cross cepat
+        if df["ema9"].iloc[-2] < df["ema21"].iloc[-2] and df["ema9"].iloc[-1] > df["ema21"].iloc[-1]:
+            signal, mode, strength = "BUY", "EMA9-21 Cross", "Scalp"
+        elif df["ema9"].iloc[-2] > df["ema21"].iloc[-2] and df["ema9"].iloc[-1] < df["ema21"].iloc[-1]:
+            signal, mode, strength = "SELL", "EMA9-21 Cross", "Scalp"
+
+        # Bollinger breakout
+        if last["close"] > last["bb_high"] and last["volume_ratio"] > 1.2:
+            signal, mode, strength = "BUY", "Bollinger Breakout", "Fast"
+        elif last["close"] < last["bb_low"] and last["volume_ratio"] > 1.2:
+            signal, mode, strength = "SELL", "Bollinger Breakout", "Fast"
+
+        # StochRSI reversal
+        if last["stoch_rsi_k"] < 20 and last["stoch_rsi_d"] < 20 and last["macd"] > last["macd_signal"]:
+            signal, mode, strength = "BUY", "StochRSI Reversal", "Short"
+        elif last["stoch_rsi_k"] > 80 and last["stoch_rsi_d"] > 80 and last["macd"] < last["macd_signal"]:
+            signal, mode, strength = "SELL", "StochRSI Reversal", "Short"
+
+    return signal, mode, strength
 
 # === KONFIRMASI MULTI TF ===
-def confirm_signal(signal_small_tf, signal_big_tf):
+def confirm_signal(signal_small_tf, signal_big_tf, tf_small="5m", tf_big="1h"):
+    """
+    Konfirmasi sinyal multi-timeframe (MTF).
+    Menguatkan sinyal hanya jika arah sama (BUY/SELL)
+    dan minimal salah satu strength adalah 'Strong', 'Confirmed', atau 'Classic'.
+    """
+
     if not signal_small_tf or not signal_big_tf:
         return None
-    if signal_small_tf[0] == signal_big_tf[0]:
-        signal, strength, mode, details = signal_small_tf
-        return signal, f"{strength}+Confirmed", f"{mode} MTF", details
+
+    s_signal, s_mode, s_strength = signal_small_tf
+    b_signal, b_mode, b_strength = signal_big_tf
+
+    # Arah harus sama
+    if s_signal == b_signal:
+        # Tentukan kekuatan hasil gabungan
+        if "Strong" in [s_strength, b_strength]:
+            strength = "Strong Confirmed"
+        elif "Confirmed" in [s_strength, b_strength]:
+            strength = "Confirmed"
+        elif "Classic" in [s_strength, b_strength]:
+            strength = "Classic Confirmed"
+        else:
+            strength = "Normal"
+
+        # Gabungkan mode dan info TF
+        mode = f"{s_mode}+{b_mode}"
+        tf_info = f"[{tf_small} + {tf_big}]"
+
+        return s_signal, strength, f"{mode} MTF {tf_info}"
+
     return None
 
 # === SCAN SEKALI ===
@@ -232,12 +294,17 @@ def scan_once():
 
             res_small = detect_signal(df_small)
             res_big = detect_signal(df_big)
-            result = confirm_signal(res_small, res_big)
+            result = confirm_signal(res_small, res_big, TIMEFRAMES[0], TIMEFRAMES[2])
 
             if result:
-                signal, strength, mode, details = result
-                if last_signals.get(symbol) == signal:
-                    continue  # abaikan duplikat
+    signal, strength, mode, details = result
+    if last_signals.get(symbol) == signal:
+        continue  # abaikan duplikat
+    # === Filter hanya sinyal kuat / terkonfirmasi ===
+    allowed_strength = ["Strong", "Confirmed", "Classic"]
+    if strength not in allowed_strength:
+        logging.info(f"⚪ {symbol}: Sinyal {signal} ({strength}) dilewati (terlalu lemah).")
+        continue
 
                 total_signals += 1
                 last_signals[symbol] = signal
