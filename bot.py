@@ -68,25 +68,22 @@ def get_klines(symbol, interval="15m", limit=200):
     Ambil data candlestick (klines) dari OKX.
     Support retry otomatis dan fallback ke domain mirror jika diblokir.
     """
-    # mapping interval OKX
     tf_map = {
         "1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m",
         "1h": "1H", "4h": "4H", "6h": "6H", "12h": "12H",
         "1d": "1D", "1w": "1W"
     }
-
     interval = tf_map.get(interval, "15m")
 
-    # OKX pakai format: BTC-USDT (bukan BTCUSDT)
-    if "-" not in symbol:
-        if symbol.endswith("USDT"):
-            symbol = symbol.replace("USDT", "-USDT")
+    # OKX pakai format BTC-USDT
+    if "-" not in symbol and symbol.endswith("USDT"):
+        symbol = symbol.replace("USDT", "-USDT")
 
     endpoints = [
-        "https://www.okx.com",        # utama
-        "https://www.okx.cab",        # mirror global
-        "https://www.okx.co",         # mirror Asia
-        "https://aws.okx.com",        # backup AWS
+        "https://www.okx.com",
+        "https://www.okx.cab",
+        "https://www.okx.co",
+        "https://aws.okx.com",
     ]
 
     for base_url in endpoints:
@@ -95,37 +92,29 @@ def get_klines(symbol, interval="15m", limit=200):
                 url = f"{base_url}/api/v5/market/candles"
                 params = {"instId": symbol, "bar": interval, "limit": limit}
                 response = requests.get(url, params=params, timeout=10)
-
-                if response.status_code == 451:
-                    logging.warning(f"⚠️ {base_url} diblokir (451), ganti endpoint...")
-                    break  # lanjut ke endpoint berikut
-
                 response.raise_for_status()
                 data = response.json()
 
                 if "data" not in data or len(data["data"]) == 0:
                     logging.warning(f"⚠️ Data kosong dari {base_url} untuk {symbol}")
-                    time.sleep(2)
                     continue
 
-                # Format OKX: [ts, o, h, l, c, vol, volCcy, volCcyQuote, confirm]
-                raw = data["data"][::-1]  # urutkan naik (awal → akhir)
+                # urutkan naik (awal → akhir)
+                raw = data["data"][::-1]
                 df = pd.DataFrame(raw, columns=[
                     "open_time", "open", "high", "low", "close",
                     "volume", "volCcy", "volCcyQuote", "confirm"
                 ])
+
                 for col in ["open", "high", "low", "close", "volume"]:
                     df[col] = df[col].astype(float)
-                df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
-                df["close_time"] = df["open_time"]  # OKX tak kirim close_time
 
-                logging.info(f"✅ OKX data OK untuk {symbol} ({interval}) dari {base_url}")
-                print(symbol, interval, len(df))  # debug info jumlah data
+                df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
+                df["close_time"] = df["open_time"]
+
+                logging.info(f"✅ OKX data OK untuk {symbol} ({interval}), {len(df)} bar")
                 return df
 
-            except requests.exceptions.Timeout:
-                logging.warning(f"⏱ Timeout ({attempt+1}/3) di {base_url} {symbol}")
-                time.sleep(2)
             except Exception as e:
                 logging.error(f"[ERROR] {symbol} ({interval}) di {base_url}: {e}")
                 time.sleep(2)
