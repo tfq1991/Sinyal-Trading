@@ -1,0 +1,12 @@
+{
+  "timeframes": ["5m", "15m", "1h", "4h"],
+  "symbols": [
+    "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
+    "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT",
+    "TRXUSDT", "UNIUSDT", "SUIUSDT", "SHIBUSDT", "MATICUSDT",
+    "LTCUSDT", "BCHUSDT", "ICPUSDT", "ALGOUSDT", "AAVEUSDT"
+  ],
+  "tp_multiplier": 1.5,
+  "sl_multiplier": 1.0,
+  "scan_interval": 15
+}
