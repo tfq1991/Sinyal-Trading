@@ -71,7 +71,7 @@ def get_klines(symbol, interval="15m", limit=200):
     - Retry otomatis hingga 3x per endpoint
     """
     endpoints = [
-        "https://api.coingecko.com/api/v3/"
+        "https://www.okx.com/api/v5/market/candles"
     ]
 
     for url in endpoints:
