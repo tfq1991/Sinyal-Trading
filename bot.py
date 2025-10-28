@@ -62,66 +62,76 @@ def save_last_signals():
     except Exception as e:
         logging.error(f"Gagal menyimpan {LAST_SIGNALS_FILE}: {e}")
 
-# === GET KLINES (Coingecko) ===
+# === GET KLINES (OKX) ===
 def get_klines(symbol, interval="15m", limit=200):
     """
-    Ambil data candlestick (klines) dari Bybit.
-    Fitur:
-    - Otomatis ganti endpoint jika diblokir (HTTP 451)
-    - Retry otomatis hingga 3x per endpoint
+    Ambil data candlestick (klines) dari OKX.
+    Support retry otomatis dan fallback ke domain mirror jika diblokir.
     """
+    # mapping interval OKX
+    tf_map = {
+        "1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m",
+        "1h": "1H", "4h": "4H", "6h": "6H", "12h": "12H",
+        "1d": "1D", "1w": "1W"
+    }
+
+    interval = tf_map.get(interval, "15m")
+
+    # OKX pakai format: BTC-USDT (bukan BTCUSDT)
+    if "-" not in symbol:
+        if symbol.endswith("USDT"):
+            symbol = symbol.replace("USDT", "-USDT")
+
     endpoints = [
-        "https://www.okx.com/api/v5/market/candles"
+        "https://www.okx.com",        # utama
+        "https://www.okx.cab",        # mirror global
+        "https://www.okx.co",         # mirror Asia
+        "https://aws.okx.com",        # backup AWS
     ]
 
-    for url in endpoints:
-        for attempt in range(3):  # maksimal 3 percobaan per endpoint
+    for base_url in endpoints:
+        for attempt in range(3):
             try:
-                params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
+                url = f"{base_url}/api/v5/market/candles"
+                params = {"instId": symbol, "bar": interval, "limit": limit}
                 response = requests.get(url, params=params, timeout=10)
 
-                # Jika diblokir (HTTP 451)
                 if response.status_code == 451:
-                    logging.warning(f"⚠️ Endpoint {url} diblokir (451) — mencoba endpoint lain...")
-                    break  # langsung ke endpoint berikutnya
+                    logging.warning(f"⚠️ {base_url} diblokir (451), ganti endpoint...")
+                    break  # lanjut ke endpoint berikut
 
                 response.raise_for_status()
                 data = response.json()
 
-                # Pastikan data valid
-                if not isinstance(data, list) or len(data) == 0:
-                    logging.warning(f"⚠️ Data kosong dari {url} untuk {symbol} ({interval}) — mencoba ulang...")
+                if "data" not in data or len(data["data"]) == 0:
+                    logging.warning(f"⚠️ Data kosong dari {base_url} untuk {symbol}")
                     time.sleep(2)
                     continue
 
-                # Buat DataFrame
-                df = pd.DataFrame(data, columns=[
-                    "open_time", "open", "high", "low", "close", "volume",
-                    "close_time", "quote_asset_volume", "trades",
-                    "taker_base_volume", "taker_quote_volume", "ignore"
+                # Format OKX: [ts, o, h, l, c, vol, volCcy, volCcyQuote, confirm]
+                raw = data["data"][::-1]  # urutkan naik (awal → akhir)
+                df = pd.DataFrame(raw, columns=[
+                    "open_time", "open", "high", "low", "close",
+                    "volume", "volCcy", "volCcyQuote", "confirm"
                 ])
                 for col in ["open", "high", "low", "close", "volume"]:
                     df[col] = df[col].astype(float)
-                df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
+                df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
+                df["close_time"] = df["open_time"]  # OKX tak kirim close_time
 
-                logging.info(f"✅ get_klines OK untuk {symbol} ({interval}) dari {url}")
+                logging.info(f"✅ OKX data OK untuk {symbol} ({interval}) dari {base_url}")
                 return df
 
             except requests.exceptions.Timeout:
-                logging.warning(f"⏱ Timeout ({attempt+1}/3) dari {url} untuk {symbol} ({interval}) — retrying...")
-                time.sleep(2)
-            except requests.exceptions.RequestException as e:
-                logging.error(f"[ERROR] Request gagal {symbol} ({interval}) dari {url}: {e}")
+                logging.warning(f"⏱ Timeout ({attempt+1}/3) di {base_url} {symbol}")
                 time.sleep(2)
             except Exception as e:
-                logging.error(f"[ERROR] Parsing gagal {symbol} ({interval}) dari {url}: {e}")
+                logging.error(f"[ERROR] {symbol} ({interval}) di {base_url}: {e}")
                 time.sleep(2)
 
-        # lanjut ke endpoint berikutnya setelah 3 percobaan gagal
-        logging.warning(f"🚫 Gagal 3x di {url} untuk {symbol} ({interval}) — mencoba endpoint lain...")
+        logging.warning(f"🚫 Gagal 3x di {base_url} untuk {symbol}")
 
-    # Semua endpoint gagal
-    logging.error(f"❌ Semua endpoint gagal untuk {symbol} ({interval})")
+    logging.error(f"❌ Semua endpoint OKX gagal untuk {symbol}")
     return pd.DataFrame()
 
 # === DETEKSI SINYAL ===
