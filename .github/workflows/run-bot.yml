@@ -2,27 +2,35 @@ name: Jalankan Scanner Bot
 
 on:
   schedule:
-    - cron: "*/15 * * * *"   # Jalankan setiap 5 menit
-  workflow_dispatch:         # Bisa dijalankan manual juga
+    - cron: "*/15 * * * *"   # Jalankan setiap 15 menit
+  workflow_dispatch:          # Bisa dijalankan manual juga
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
 
+    # 🔧 Tambahkan variabel environment global
+    env:
+      LOG_LEVEL: DEBUG       # Aktifkan log detail dari bot.py
+
     steps:
+      # === 1. Checkout repository ===
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # === 2. Setup Python environment ===
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
+      # === 3. Install dependencies ===
       - name: Install dependencies
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
 
+      # === 4. Jalankan scanner bot (sekali scan + summary) ===
       - name: Jalankan scanner bot (sekali scan + summary)
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
@@ -33,13 +41,16 @@ jobs:
           from datetime import datetime
           from bot import scan_once, load_last_signals, save_last_signals, send_message
 
+          # Konfigurasi logging untuk tampilan di GitHub Actions
           logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
           def format_summary(summary_dict):
               """Format summary sinyal ke bentuk pesan Telegram"""
               naik = summary_dict.get("buy", 0)
               turun = summary_dict.get("sell", 0)
-              total = naik + turun
+              total = summary_dict.get("total", naik + turun)
+              if total == 0:
+                  return "⚪ Tidak ada sinyal valid kali ini."
               return (
                   f"📊 *Summary Sinyal Baru:*\n"
                   f"🟢 Naik (BUY): {naik}\n"
@@ -56,7 +67,7 @@ jobs:
               result = scan_once()
               save_last_signals()
 
-              if isinstance(result, dict):  # Jika scan_once return dict hasil sinyal
+              if isinstance(result, dict):
                   summary_text = format_summary(result)
                   send_message(f"✅ Scan selesai.\n\n{summary_text}")
               elif isinstance(result, int):
@@ -76,3 +87,11 @@ jobs:
                   pass
               raise SystemExit(1)
           EOF
+
+      # === 5. Upload log hasil scan (opsional tapi sangat berguna) ===
+      - name: Upload bot log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bot-debug-log
+          path: bot_debug.log
