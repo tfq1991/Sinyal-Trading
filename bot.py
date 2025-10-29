@@ -216,8 +216,16 @@ def confirm_signal(signal_small_tf, signal_big_tf):
 # -------------------------
 # SCANNER
 # -------------------------
+
 def scan_once():
+    """
+    Jalankan pemindaian semua pair dan kembalikan dict summary hasil sinyal.
+    Return contoh:
+        {"buy": 3, "sell": 2, "total": 5}
+    """
     total_signals = 0
+    summary = {"buy": 0, "sell": 0}
+
     for symbol in SYMBOLS:
         try:
             df15 = get_klines(symbol, "15m")
@@ -267,9 +275,17 @@ def scan_once():
                 "_Info only — no auto order._"
             )
             send_message(msg)
+
             last_signals[symbol] = signal
             total_signals += 1
 
+            # Tambahkan ke summary
+            if signal == "BUY":
+                summary["buy"] += 1
+            else:
+                summary["sell"] += 1
+
+            # Log ke CSV
             log_signal_csv({
                 "time_utc": last_row["close_time"].strftime('%Y-%m-%d %H:%M:%S'),
                 "pair": symbol,
@@ -283,7 +299,10 @@ def scan_once():
         except Exception as e:
             logging.error(f"{symbol}: ⚠️ Error scanning: {e}")
 
-    return total_signals
+    # tambahkan total di summary
+    summary["total"] = summary["buy"] + summary["sell"]
+    logging.info(f"📊 Summary: BUY={summary['buy']}, SELL={summary['sell']}, TOTAL={summary['total']}")
+    return summary
 
 # -------------------------
 # MAIN LOOP
