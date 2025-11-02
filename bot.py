@@ -36,7 +36,7 @@ SYMBOLS = [
 TP1_PERCENT = 0.05
 TP2_PERCENT = 0.10
 SL_PERCENT = 0.05
-SCAN_INTERVAL = 15  # minutes (used by external scheduler like GitHub Actions)
+SCAN_INTERVAL = 10  # minutes (used by external scheduler like GitHub Actions)
 
 APPLY_HYBRID_FILTER = False
 HYBRID_THRESHOLD = 4
