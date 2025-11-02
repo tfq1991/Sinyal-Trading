@@ -2,7 +2,7 @@ name: Jalankan Scanner Bot
 
 on:
   schedule:
-    - cron: "*/15 * * * *"   # Jalankan setiap 15 menit
+    - cron: "*/10 * * * *"   # Jalankan setiap 10 menit
   workflow_dispatch:          # Bisa dijalankan manual juga
 
 jobs:
