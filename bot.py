@@ -1,6 +1,6 @@
 # =====================================
-# ===  MrT Scalper Combo + Swift Ultra v2  ===
-# ===  OKX + MEXC fallback + Debug  ===
+# ===  MrT Scalper Combo + Swift Ultra v2.1  ===
+# ===  OKX + Binance fallback + Debug  ===
 # ===  VWAP Div + RSI Opt + ADX/BB/Stoch/Candle/Hybrid + Swift Ultra ===
 # =====================================
 
@@ -105,45 +105,78 @@ def log_signal_csv(row: dict):
         df.to_csv(SIGNALS_CSV, index=False)
 
 # -------------------------
-# GET KLINES
+# GET KLINES (OKX primary, Binance fallback)
 # -------------------------
 def get_klines(symbol, interval="5m", limit=500):
+    """
+    Returns DataFrame with columns:
+    open_time, open, high, low, close, volume, volCcy, volCcyQuote, confirm, close_time
+    OKX: uses instId and bar param
+    Binance fallback: /api/v3/klines returns arrays per kline
+    """
     tf_map = {
         "1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m",
         "1h": "1H", "4h": "4H", "6h": "6H", "12h": "12H",
         "1d": "1D", "1w": "1W"
     }
-    interval = tf_map.get(interval, interval)
+    interval_param = tf_map.get(interval, interval)
     inst = symbol.replace("USDT", "-USDT") if "-" not in symbol else symbol
 
-    endpoints = [
+    okx_endpoints = [
         "https://www.okx.com",
         "https://www.okx.cab",
         "https://www.okx.co",
         "https://aws.okx.com",
     ]
 
-    for base_url in endpoints:
+    # Binance fallback
+    binance_base = "https://api.binance.com"
+
+    # Try OKX endpoints first
+    for base_url in okx_endpoints:
         try:
             url = f"{base_url}/api/v5/market/candles"
-            params = {"instId": inst, "bar": interval, "limit": limit}
+            params = {"instId": inst, "bar": interval_param, "limit": limit}
             r = requests.get(url, params=params, timeout=10)
             data = r.json()
-            if "data" not in data or len(data["data"]) == 0:
-                continue
-            raw = data["data"][::-1]
-            df = pd.DataFrame(raw, columns=[
-                "open_time", "open", "high", "low", "close", "volume",
-                "volCcy", "volCcyQuote", "confirm"
-            ])
-            for c in ["open", "high", "low", "close", "volume"]:
-                df[c] = df[c].astype(float)
-            df["open_time"] = pd.to_datetime(pd.to_numeric(df["open_time"], errors="coerce"), unit="ms")
-            df["close_time"] = df["open_time"]
-            return df
+            if isinstance(data, dict) and "data" in data and len(data["data"]) > 0:
+                raw = data["data"][::-1]
+                df = pd.DataFrame(raw, columns=[
+                    "open_time", "open", "high", "low", "close", "volume",
+                    "volCcy", "volCcyQuote", "confirm"
+                ])
+                for c in ["open", "high", "low", "close", "volume"]:
+                    df[c] = df[c].astype(float)
+                df["open_time"] = pd.to_datetime(pd.to_numeric(df["open_time"], errors="coerce"), unit="ms")
+                df["close_time"] = df["open_time"]
+                return df
         except Exception as e:
-            logging.debug(f"get_klines error {base_url} {inst}: {e}")
-    logging.error(f"All OKX endpoints failed for {symbol}")
+            logging.debug(f"get_klines OKX error {base_url} {inst}: {e}")
+
+    # Fallback: Binance klines (api/v3/klines)
+    try:
+        path = "/api/v3/klines"
+        params = {"symbol": symbol, "interval": interval_param, "limit": limit}
+        r = requests.get(f"{binance_base}{path}", params=params, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            # Binance returns list of lists:
+            # [ Open time, Open, High, Low, Close, Volume, Close time, ... ]
+            raw = data[::-1]
+            df = pd.DataFrame(raw)
+            if df.shape[1] >= 6:
+                df = df.iloc[:, :7]  # take up to close time
+                df.columns = ["open_time", "open", "high", "low", "close", "volume", "close_time"]
+                for c in ["open", "high", "low", "close", "volume"]:
+                    df[c] = df[c].astype(float)
+                # Binance times are in ms for open_time and close_time
+                df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
+                df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
+                return df
+    except Exception as e:
+        logging.debug(f"get_klines Binance error {symbol}: {e}")
+
+    logging.error(f"All endpoints failed for {symbol}")
     return pd.DataFrame()
 
 # -------------------------
@@ -154,7 +187,6 @@ def is_bullish_engulfing(df):
         return False
     prev = df.iloc[-2]
     last = df.iloc[-1]
-    # prev bearish and last bullish and last body engulfs prev body
     prev_body = abs(prev['close'] - prev['open'])
     last_body = abs(last['close'] - last['open'])
     return (prev['close'] < prev['open']) and (last['close'] > last['open']) and (last['close'] > prev['open']) and (last['open'] < prev['close']) and (last_body > prev_body)
@@ -216,7 +248,6 @@ def detect_signal_generic(df, tf_label):
     return None
 
 def detect_signal_15m(df):
-    # keep previous 15m logic but with slight scoring
     return detect_signal_generic(df, "15m")
 
 def detect_signal_1h(df):
@@ -416,6 +447,7 @@ def scan_once():
             title = "BUY Signal Detected" if signal == "BUY" else "SELL Signal Detected"
 
             reasons_text = ", ".join(meta.get("reasons", [])) if meta.get("reasons") else "—"
+            atr_line = f"🔎 ATR: {atr:.6f}\n" if atr else ""
 
             # Format message (kept pretty)
             msg = (
@@ -433,8 +465,8 @@ def scan_once():
                 f"  • TP1: `{tp1:.4f}`\n"
                 f"  • TP2: `{tp2:.4f}`\n\n"
                 f"🛑 *Stop Loss:* `{sl:.4f}`\n"
-                f"{'🔎 ATR: {:.6f}\\n'.format(atr) if atr else ''}"
-                f"\n📈 *Reasons:* {reasons_text}\n"
+                f"{atr_line}"
+                f"📈 *Reasons:* {reasons_text}\n"
                 f"⚙️ _Info only — no auto order._\n"
                 f"━━━━━━━━━━━━━━━━━━━"
             )
@@ -473,7 +505,7 @@ def scan_once():
 # -------------------------
 def main():
     load_last_signals()
-    send_message("🚀 MrT Combo+Swift Ultra v2 aktif (5m/15m/1h) — ATR-based SL/TP agresif")
+    send_message("🚀 MrT Combo+Swift Ultra v2.1 aktif (5m/15m/1h) — ATR-based SL/TP agresif")
     total = scan_once()
     save_last_signals()
     send_message(f"✅ Scan selesai. {total} sinyal baru ditemukan.")
