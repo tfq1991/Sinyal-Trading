@@ -1,7 +1,7 @@
 # =====================================
-# ===  MrT Scalper Combo + Booster  ===
+# ===  MrT Scalper Combo + Swift Ultra v2  ===
 # ===  OKX + MEXC fallback + Debug  ===
-# ===  VWAP Div + RSI Opt + ADX/BB/Stoch/Candle/Hybrid + Swift Algo ===
+# ===  VWAP Div + RSI Opt + ADX/BB/Stoch/Candle/Hybrid + Swift Ultra ===
 # =====================================
 
 import logging
@@ -13,12 +13,13 @@ import requests
 import numpy as np
 import pandas as pd
 import ta
-from datetime import datetime
+from datetime import datetime, timezone
 
 # -------------------------
 # CONFIG
 # -------------------------
-TIMEFRAMES = ["15m", "1h"]
+TIMEFRAMES = ["5m", "15m", "1h"]  # added 5m
+BASE_SIGNAL_TFS = ["5m", "15m", "1h"]
 
 SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
@@ -106,7 +107,7 @@ def log_signal_csv(row: dict):
 # -------------------------
 # GET KLINES
 # -------------------------
-def get_klines(symbol, interval="15m", limit=300):
+def get_klines(symbol, interval="5m", limit=500):
     tf_map = {
         "1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m",
         "1h": "1H", "4h": "4H", "6h": "6H", "12h": "12H",
@@ -146,34 +147,89 @@ def get_klines(symbol, interval="15m", limit=300):
     return pd.DataFrame()
 
 # -------------------------
-# INDICATORS & SIGNAL DETECTORS
+# Helper: Engulfing candle detector
 # -------------------------
-def detect_signal(df, interval="1h"):
+def is_bullish_engulfing(df):
+    if df.shape[0] < 2:
+        return False
+    prev = df.iloc[-2]
+    last = df.iloc[-1]
+    # prev bearish and last bullish and last body engulfs prev body
+    prev_body = abs(prev['close'] - prev['open'])
+    last_body = abs(last['close'] - last['open'])
+    return (prev['close'] < prev['open']) and (last['close'] > last['open']) and (last['close'] > prev['open']) and (last['open'] < prev['close']) and (last_body > prev_body)
+
+def is_bearish_engulfing(df):
+    if df.shape[0] < 2:
+        return False
+    prev = df.iloc[-2]
+    last = df.iloc[-1]
+    prev_body = abs(prev['close'] - prev['open'])
+    last_body = abs(last['close'] - last['open'])
+    return (prev['close'] > prev['open']) and (last['close'] < last['open']) and (last['open'] > prev['close']) and (last['close'] < prev['open']) and (last_body > prev_body)
+
+# -------------------------
+# INDICATORS & SIGNAL DETECTORS (5m, 15m, 1h)
+# -------------------------
+def detect_signal_generic(df, tf_label):
+    """Generic trend+momentum detector used for 1h and 15m (lagging confirm)"""
     if df.shape[0] < 50:
         return None
     try:
         df["ema50"] = ta.trend.EMAIndicator(df["close"], window=50).ema_indicator()
         df["ema200"] = ta.trend.EMAIndicator(df["close"], window=200).ema_indicator()
-        df["rsi"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
+        df["rsi14"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
         macd = ta.trend.MACD(df["close"])
         df["macd"] = macd.macd()
         df["macd_signal"] = macd.macd_signal()
     except Exception as e:
-        logging.error(f"Indicator calc error: {e}")
+        logging.error(f"{tf_label} Indicator calc error: {e}")
         return None
 
     last = df.iloc[-1]
-    if last["ema50"] > last["ema200"] and last["macd"] > last["macd_signal"] and last["rsi"] > 55:
-        return "BUY", "Trend Confirm", "Strong"
-    elif last["ema50"] < last["ema200"] and last["macd"] < last["macd_signal"] and last["rsi"] < 45:
-        return "SELL", "Trend Confirm", "Strong"
+    reasons = []
+    score = 0.0
+    if last["ema50"] > last["ema200"]:
+        reasons.append("EMA50>200")
+        score += 1.5
+    else:
+        reasons.append("EMA50<200")
+        score += -0.5
+
+    if last["macd"] > last["macd_signal"]:
+        reasons.append("MACD>Signal")
+        score += 1.5
+    else:
+        score += -0.5
+
+    if last["rsi14"] > 55:
+        reasons.append("RSI14>55")
+        score += 1.0
+    elif last["rsi14"] < 45:
+        reasons.append("RSI14<45")
+        score += -1.0
+
+    if last["ema50"] > last["ema200"] and last["macd"] > last["macd_signal"] and last["rsi14"] > 55:
+        return "BUY", f"Trend Confirm ({tf_label})", "Strong", {"score": score, "reasons": reasons}
+    elif last["ema50"] < last["ema200"] and last["macd"] < last["macd_signal"] and last["rsi14"] < 45:
+        return "SELL", f"Trend Confirm ({tf_label})", "Strong", {"score": score, "reasons": reasons}
     return None
 
 def detect_signal_15m(df):
-    if df.shape[0] < 60:
+    # keep previous 15m logic but with slight scoring
+    return detect_signal_generic(df, "15m")
+
+def detect_signal_1h(df):
+    return detect_signal_generic(df, "1h")
+
+def detect_signal_5m(df):
+    """Faster Swift Ultra detection for 5m using EMA5/13 + RSI7 + VWAP/OBV"""
+    if df.shape[0] < 50:
         return None
     try:
-        df["rsi"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
+        df["ema5"] = ta.trend.EMAIndicator(df["close"], window=5).ema_indicator()
+        df["ema13"] = ta.trend.EMAIndicator(df["close"], window=13).ema_indicator()
+        df["rsi7"] = ta.momentum.RSIIndicator(df["close"], window=7).rsi()
         macd = ta.trend.MACD(df["close"])
         df["macd"] = macd.macd()
         df["macd_signal"] = macd.macd_signal()
@@ -182,61 +238,107 @@ def detect_signal_15m(df):
         ).volume_weighted_average_price()
         df["obv"] = ta.volume.OnBalanceVolumeIndicator(df["close"], df["volume"]).on_balance_volume()
         df["obv_ma"] = df["obv"].rolling(20).mean()
-        df["volume_ratio"] = df["volume"] / df["volume"].rolling(20).mean()
     except Exception as e:
-        logging.error(f"Indicator error 15m: {e}")
+        logging.error(f"5m Indicator error: {e}")
         return None
 
     last = df.iloc[-1]
-    base_buy = (
-        last["rsi"] > 50 and last["macd"] > last["macd_signal"] and
-        last["close"] > last["vwap"] and last["obv"] > last["obv_ma"] and
-        last["volume_ratio"] > 1.0
-    )
-    base_sell = (
-        last["rsi"] < 50 and last["macd"] < last["macd_signal"] and
-        last["close"] < last["vwap"] and last["obv"] < last["obv_ma"] and
-        last["volume_ratio"] > 1.0
-    )
+    reasons = []
+    score = 0.0
+    base_buy = (last["ema5"] > last["ema13"]) and (last["rsi7"] > 50)
+    base_sell = (last["ema5"] < last["ema13"]) and (last["rsi7"] < 50)
 
-    if base_buy:
-        return "BUY", "RSI+MACD+VWAP+OBV", "Strong", {"score": 6, "reasons": ["RSI>50", "MACD>Signal"]}
-    elif base_sell:
-        return "SELL", "RSI+MACD+VWAP+OBV", "Strong", {"score": 6, "reasons": ["RSI<50", "MACD<Signal"]}
+    if last.get("vwap", np.nan) and last["close"] > last["vwap"]:
+        reasons.append("Close>VWAP")
+        score += 0.8
+    if last.get("obv_ma", np.nan) and last["obv"] > last["obv_ma"]:
+        reasons.append("OBV>MA")
+        score += 0.8
+
+    if base_buy and last["macd"] > last["macd_signal"]:
+        reasons.append("EMA5>13, RSI7>50, MACD>Signal")
+        score += 2.0
+        return "BUY", "Swift Ultra (5m)", "Fast", {"score": score, "reasons": reasons}
+    elif base_sell and last["macd"] < last["macd_signal"]:
+        reasons.append("EMA5<13, RSI7<50, MACD<Signal")
+        score += 2.0
+        return "SELL", "Swift Ultra (5m)", "Fast", {"score": score, "reasons": reasons}
     return None
 
 # -------------------------
-# Swift Algo Booster
+# Multi-timeframe confirmation
 # -------------------------
-def detect_signal_swift(df):
-    """Deteksi sinyal cepat berbasis Swift Momentum Algo"""
-    if df.shape[0] < 30:
-        return None
+def confirm_multi(signals):
+    """
+    signals: dict with tf->(signal, mode, strength, meta) or None
+    Return combined signal if >=2 TF agree. Merge meta & sum scores.
+    """
+    votes = {}
+    metas = []
+    total_score = 0.0
+    reasons = []
+    modes = []
+
+    for tf, res in signals.items():
+        if res:
+            s_signal, s_mode, s_strength, s_meta = res
+            votes.setdefault(s_signal, []).append(tf)
+            metas.append(s_meta)
+            modes.append(s_mode)
+            total_score += s_meta.get("score", 0.0)
+            reasons += s_meta.get("reasons", [])
+
+    # Find majority
+    for sig, tfs in votes.items():
+        if len(tfs) >= 2:  # at least 2 TF agree
+            mode_str = "+".join(sorted(modes))
+            merged_meta = {"score": total_score, "reasons": list(dict.fromkeys(reasons))}
+            return sig, f"Strong Confirmed ({','.join(tfs)})", mode_str, merged_meta
+    return None
+
+# -------------------------
+# ATR-based SL/TP (aggressive)
+# -------------------------
+def compute_atr_based_levels(df, entry, signal):
+    """
+    Aggressive multipliers:
+    SL: tight => 0.8 * ATR
+    TP1: 1.8 * ATR
+    TP2: 3.6 * ATR
+    If ATR fails, fallback to percent-based
+    """
     try:
-        df["ema9"] = ta.trend.EMAIndicator(df["close"], window=9).ema_indicator()
-        df["ema21"] = ta.trend.EMAIndicator(df["close"], window=21).ema_indicator()
-        df["rsi_fast"] = ta.momentum.RSIIndicator(df["close"], window=7).rsi()
-        df["high_look"] = df["high"].rolling(20).max()
-        df["low_look"] = df["low"].rolling(20).min()
+        atr_series = ta.volatility.AverageTrueRange(df["high"], df["low"], df["close"], window=14).average_true_range()
+        atr = float(atr_series.iloc[-1])
+        if np.isnan(atr) or atr <= 0:
+            raise ValueError("bad atr")
+        if signal == "BUY":
+            sl = entry - 0.8 * atr
+            tp1 = entry + 1.8 * atr
+            tp2 = entry + 3.6 * atr
+        else:
+            sl = entry + 0.8 * atr
+            tp1 = entry - 1.8 * atr
+            tp2 = entry - 3.6 * atr
+
+        # Ensure SL is not on wrong side of price (safety)
+        if signal == "BUY" and sl >= entry:
+            sl = entry * (1 - SL_PERCENT)
+        if signal == "SELL" and sl <= entry:
+            sl = entry * (1 + SL_PERCENT)
+
+        return tp1, tp2, sl, atr
     except Exception as e:
-        logging.error(f"Swift algo calc error: {e}")
-        return None
-
-    last = df.iloc[-1]
-    if last["ema9"] > last["ema21"] and last["rsi_fast"] > 55 and last["close"] > last["high_look"] * 0.995:
-        return "BUY"
-    elif last["ema9"] < last["ema21"] and last["rsi_fast"] < 45 and last["close"] < last["low_look"] * 1.005:
-        return "SELL"
-    return None
-
-def confirm_signal(signal_small_tf, signal_big_tf):
-    if not signal_small_tf or not signal_big_tf:
-        return None
-    s_signal, s_mode, s_strength, s_meta = signal_small_tf
-    b_signal, b_mode, b_strength = signal_big_tf
-    if s_signal == b_signal:
-        return s_signal, f"Strong Confirmed", f"{s_mode}+{b_mode}", s_meta
-    return None
+        # fallback to percent based
+        if signal == "BUY":
+            tp1 = entry * (1 + TP1_PERCENT)
+            tp2 = entry * (1 + TP2_PERCENT)
+            sl = entry * (1 - SL_PERCENT)
+        else:
+            tp1 = entry * (1 - TP1_PERCENT)
+            tp2 = entry * (1 - TP2_PERCENT)
+            sl = entry * (1 + SL_PERCENT)
+        return tp1, tp2, sl, None
 
 # -------------------------
 # SCANNER
@@ -247,63 +349,92 @@ def scan_once():
 
     for symbol in SYMBOLS:
         try:
-            df15 = get_klines(symbol, "15m")
-            df1h = get_klines(symbol, "1h")
+            # Fetch klines for needed TFs (limit enough for indicators)
+            df5 = get_klines(symbol, "5m", limit=200)
+            df15 = get_klines(symbol, "15m", limit=200)
+            df1h = get_klines(symbol, "1h", limit=300)
 
-            if df15.empty or df1h.empty:
-                logging.debug(f"{symbol}: ❌ Data kosong")
+            if df5.empty or df15.empty or df1h.empty:
+                logging.debug(f"{symbol}: ❌ Data kosong pada salah satu timeframe")
                 continue
 
+            # Volume filter (use 5m volume for entry aggressiveness)
+            last5 = df5.iloc[-1]
+            vol_mean_30 = df5["volume"].rolling(30).mean().iloc[-1]
+            if vol_mean_30 and last5["volume"] < 0.7 * vol_mean_30:
+                logging.debug(f"{symbol}: skip karena volume rendah (5m)")
+                continue
+
+            # Detect signals on each timeframe
+            res5 = detect_signal_5m(df5)
             res15 = detect_signal_15m(df15)
-            res1h = detect_signal(df1h, "1h")
+            res1h = detect_signal_1h(df1h)
 
-            if not res15 or not res1h:
-                continue
-
-            b_signal, b_mode, b_strength = res1h
-            result = confirm_signal(res15, (b_signal, b_mode, b_strength))
+            signals = {"5m": res5, "15m": res15, "1h": res1h}
+            result = confirm_multi(signals)
             if not result:
                 continue
 
             signal, strength_label, mode_str, meta = result
             score = meta.get("score", 0.0)
 
-            swift_res = detect_signal_swift(df15)
-            if swift_res == signal:
-                score += 2
+            # Check engulfing patterns to boost confidence
+            eng5_buy = is_bullish_engulfing(df5)
+            eng5_sell = is_bearish_engulfing(df5)
+            eng15_buy = is_bullish_engulfing(df15)
+            eng15_sell = is_bearish_engulfing(df15)
+
+            if signal == "BUY" and (eng5_buy or eng15_buy):
+                score += 1.5
+                strength_label += " + Engulfing Boost 🔥"
+                meta.setdefault("reasons", []).append("Engulfing")
+            if signal == "SELL" and (eng5_sell or eng15_sell):
+                score += 1.5
+                strength_label += " + Engulfing Boost 🔥"
+                meta.setdefault("reasons", []).append("Engulfing")
+
+            # Swift extra confirmation (reuse 5m logic)
+            swift_res = res5
+            if swift_res and swift_res[0] == signal:
+                score += 1.0
                 strength_label += " + Swift Confirmed 🚀"
-            elif swift_res and swift_res != signal:
+            elif swift_res and swift_res[0] != signal:
                 strength_label += " ⚠️ Swift Divergence"
 
             if last_signals.get(symbol) == signal:
                 continue
 
-            last_row = df15.iloc[-1]
-            entry1 = float(last_row["close"])
-            entry2 = entry1 * (0.995 if signal == "BUY" else 1.005)
-            tp1 = entry1 * (1 + TP1_PERCENT) if signal == "BUY" else entry1 * (1 - TP1_PERCENT)
-            tp2 = entry1 * (1 + TP2_PERCENT) if signal == "BUY" else entry1 * (1 - TP2_PERCENT)
-            sl = entry1 * (1 - SL_PERCENT) if signal == "BUY" else entry1 * (1 + SL_PERCENT)
+            # Entry price from last 5m close for more aggressive entry
+            entry1 = float(last5["close"])
+            # small buffer entry2 slightly more conservative
+            entry2 = entry1 * (0.997 if signal == "BUY" else 1.003)
+
+            # ATR-based dynamic levels (aggressive multipliers)
+            tp1, tp2, sl, atr = compute_atr_based_levels(df5, entry1, signal)
 
             emoji = "🟢" if signal == "BUY" else "🔴"
             title = "BUY Signal Detected" if signal == "BUY" else "SELL Signal Detected"
 
+            reasons_text = ", ".join(meta.get("reasons", [])) if meta.get("reasons") else "—"
+
+            # Format message (kept pretty)
             msg = (
                 f"{emoji} *{title}*\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
                 f"📊 *Strength:* {strength_label}\n"
                 f"💪 *Score:* {score:.2f}\n\n"
                 f"💱 *Pair:* `{symbol}`\n"
-                f"⏱ *Timeframe:* 15m & 1h\n"
-                f"🕒 *Time:* {last_row['close_time'].strftime('%Y-%m-%d %H:%M:%S UTC')}\n\n"
+                f"⏱ *Timeframe:* 5m, 15m & 1h\n"
+                f"🕒 *Time:* {last5['close_time'].strftime('%Y-%m-%d %H:%M:%S UTC')}\n\n"
                 f"🎯 *Entry Zone:*\n"
                 f"  • Entry 1: `{entry1:.4f}`\n"
                 f"  • Entry 2: `{entry2:.4f}`\n\n"
                 f"💰 *Targets:*\n"
                 f"  • TP1: `{tp1:.4f}`\n"
                 f"  • TP2: `{tp2:.4f}`\n\n"
-                f"🛑 *Stop Loss:* `{sl:.4f}`\n\n"
-                f"📈 *Reasons:* {', '.join(meta.get('reasons', []))}\n"
+                f"🛑 *Stop Loss:* `{sl:.4f}`\n"
+                f"{'🔎 ATR: {:.6f}\\n'.format(atr) if atr else ''}"
+                f"\n📈 *Reasons:* {reasons_text}\n"
                 f"⚙️ _Info only — no auto order._\n"
                 f"━━━━━━━━━━━━━━━━━━━"
             )
@@ -318,7 +449,7 @@ def scan_once():
                 summary["sell"] += 1
 
             log_signal_csv({
-                "time_utc": last_row["close_time"].strftime('%Y-%m-%d %H:%M:%S'),
+                "time_utc": last5["close_time"].strftime('%Y-%m-%d %H:%M:%S'),
                 "pair": symbol,
                 "signal": signal,
                 "score": score,
@@ -326,7 +457,8 @@ def scan_once():
                 "entry2": entry2,
                 "tp1": tp1,
                 "tp2": tp2,
-                "sl": sl
+                "sl": sl,
+                "atr": atr
             })
 
         except Exception as e:
@@ -341,7 +473,7 @@ def scan_once():
 # -------------------------
 def main():
     load_last_signals()
-    send_message("🚀 MrT Combo+Booster (Swift Algo) aktif")
+    send_message("🚀 MrT Combo+Swift Ultra v2 aktif (5m/15m/1h) — ATR-based SL/TP agresif")
     total = scan_once()
     save_last_signals()
     send_message(f"✅ Scan selesai. {total} sinyal baru ditemukan.")
