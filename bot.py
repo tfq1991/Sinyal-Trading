@@ -110,7 +110,7 @@ def log_signal_csv(row: dict):
 def get_klines(symbol, interval="5m", limit=500):
     """
     Returns DataFrame with columns:
-    open_time, open, high, low, close, volume, volCcy, volCcyQuote, confirm, close_time
+    open_time, open, high, low, close, volume, close_time
     OKX: uses instId and bar param
     Binance fallback: /api/v3/klines returns arrays per kline
     """
@@ -199,6 +199,29 @@ def is_bearish_engulfing(df):
     prev_body = abs(prev['close'] - prev['open'])
     last_body = abs(last['close'] - last['open'])
     return (prev['close'] > prev['open']) and (last['close'] < last['open']) and (last['open'] > prev['close']) and (last['close'] < prev['open']) and (last_body > prev_body)
+
+# -------------------------
+# Interpret Score -> Trend Power label
+# -------------------------
+def interpret_score(score):
+    if score >= 15:
+        return "🔥 Extreme Bullish"
+    elif score >= 8:
+        return "Strong Bullish"
+    elif score >= 3:
+        return "Moderate Bullish"
+    elif score > 0:
+        return "Weak Bullish"
+    elif score <= -15:
+        return "💀 Extreme Bearish"
+    elif score <= -8:
+        return "Strong Bearish"
+    elif score <= -3:
+        return "Moderate Bearish"
+    elif score < 0:
+        return "Weak Bearish"
+    else:
+        return "Neutral"
 
 # -------------------------
 # INDICATORS & SIGNAL DETECTORS (5m, 15m, 1h)
@@ -449,12 +472,15 @@ def scan_once():
             reasons_text = ", ".join(meta.get("reasons", [])) if meta.get("reasons") else "—"
             atr_line = f"🔎 ATR: {atr:.6f}\n" if atr else ""
 
+            # interpret score -> human readable power
+            trend_power = interpret_score(score)
+
             # Format message (kept pretty)
             msg = (
                 f"{emoji} *{title}*\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
                 f"📊 *Strength:* {strength_label}\n"
-                f"💪 *Score:* {score:.2f}\n\n"
+                f"💪 *Score:* {score:.2f} ({trend_power})\n\n"
                 f"💱 *Pair:* `{symbol}`\n"
                 f"⏱ *Timeframe:* 5m, 15m & 1h\n"
                 f"🕒 *Time:* {last5['close_time'].strftime('%Y-%m-%d %H:%M:%S UTC')}\n\n"
